@@ -45,7 +45,10 @@ ap.add_argument("--spring-bones", action="store_true",
                 help="max tier: bones a hair/clothing item brings swing (VRMC_springBone), body colliders")
 args = ap.parse_args(argv)
 
-addon_utils.enable("bl_ext.blender_org.vrm", default_set=True)
+# Installed from extensions.blender.org (Blender 4.2+) or, older, as a legacy add-on.
+if not any(addon_utils.enable(m, default_set=True) for m in ("bl_ext.blender_org.vrm", "io_scene_vrm")):
+    sys.exit("VRM add-on not found: install 'VRM format' from extensions.blender.org "
+             "(blender --command extension install -s -e vrm)")
 
 # VRM humanoid name -> source bone name. The add-on's automatic mapper is used
 # only when no table is given; an explicit table is deterministic and

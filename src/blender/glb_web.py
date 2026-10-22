@@ -3,7 +3,9 @@
     python src/blender/glb_web.py in.vrm out.web.vrm [--max-texture 1024]
         [--normal-max 512] [--jpeg-quality 85] [--morph-eps 0.0001] [--keep-morph-normals]
 
-Runs with the system Python (needs numpy + Pillow), not inside Blender. Every
+Runs with the system Python (numpy + Pillow) or inside Blender, whose Python has
+numpy but no Pillow (`blender --background --python glb_web.py -- in out`): there
+Blender decodes, scales and writes JPEG, and palette PNGs are written here. Every
 step is plain glTF that three.js/three-vrm and other VRM loaders read without
 opt-in decoders (no Draco/meshopt/KTX2 -- those need the app to register a
 decoder):
@@ -35,7 +37,11 @@ import struct
 import sys
 
 import numpy as np
-from PIL import Image
+
+try:
+    from PIL import Image
+except ImportError:  # inside Blender: images go through bpy (_bpy_recode)
+    Image = None
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from glb_dedupe import BIN_CHUNK, GLB_MAGIC, JSON_CHUNK, dedupe  # noqa: E402
@@ -128,9 +134,16 @@ def shrink_textures(g, max_px, normal_px, quality, png_colors, report):
         if "bufferView" not in img:
             continue
         before = j["bufferViews"][img["bufferView"]]["byteLength"]
+        limit = normal_px if i in normal_imgs else max_px
+        if Image is None:
+            raw, mime, size = _bpy_recode(g.view_bytes(img["bufferView"]), limit, quality, png_colors)
+            if len(raw) < before:
+                img["bufferView"] = g.add_view(raw)
+                img["mimeType"] = mime
+            out.append((img.get("name"), size, mime, before, min(len(raw), before)))
+            continue
         im = Image.open(io.BytesIO(g.view_bytes(img["bufferView"])))
         im.load()
-        limit = normal_px if i in normal_imgs else max_px
         if max(im.size) > limit:
             f = limit / max(im.size)
             im = im.resize((max(1, round(im.size[0] * f)), max(1, round(im.size[1] * f))), Image.LANCZOS)
@@ -153,6 +166,112 @@ def shrink_textures(g, max_px, normal_px, quality, png_colors, report):
     report["textures"] = {"count": len(out), "bytes_before": sum(o[3] for o in out),
                           "bytes_after": sum(o[4] for o in out),
                           "png_kept_for_alpha": sum(1 for o in out if o[2] == "image/png")}
+
+
+# Pillow's FASTOCTREE, asked for 256, used 93 entries on Alice's hair (344 KB,
+# mean alpha-weighted error 2.17/255). _quantize is more accurate per entry: at
+# 256 it gave 700 KB (error 0.68); at 32 it matches Pillow -- 355 KB, error 2.11.
+BPY_PNG_COLORS = 32
+
+
+def _bpy_recode(data, limit, quality, png_colors):
+    """shrink_textures' Pillow branch, done with Blender: decode + scale + JPEG
+    by bpy, PNG (palette or RGBA) written by _png. Returns (bytes, mime, width)."""
+    import tempfile
+
+    import bpy
+    with tempfile.TemporaryDirectory() as d:
+        src = os.path.join(d, "src")
+        with open(src, "wb") as f:
+            f.write(data)
+        im = bpy.data.images.load(src)
+        try:
+            w, h = im.size
+            if max(w, h) > limit:
+                f = limit / max(w, h)
+                w, h = max(1, round(w * f)), max(1, round(h * f))
+                im.scale(w, h)
+            px = np.empty(w * h * 4, np.float32)
+            im.pixels.foreach_get(px)
+            px = px.reshape(h, w, 4)[::-1]  # Blender stores rows bottom-up
+            if im.is_float and im.colorspace_settings.name == "sRGB":
+                # 16-bit sources come back linear; PNG/JPEG want the sRGB values
+                c = np.clip(px[..., :3], 0, 1)
+                px[..., :3] = np.where(c <= 0.0031308, c * 12.92, 1.055 * c ** (1 / 2.4) - 0.055)
+            rgba = np.round(np.clip(px, 0, 1) * 255).astype(np.uint8)
+            if rgba[..., 3].min() < 250:
+                return _png(rgba, png_colors and min(png_colors, BPY_PNG_COLORS)), "image/png", w
+            dst = os.path.join(d, "dst.jpg")
+            im.file_format = "JPEG"
+            im.save(filepath=dst, quality=quality)
+            with open(dst, "rb") as f:
+                return f.read(), "image/jpeg", w
+        finally:
+            bpy.data.images.remove(im)
+
+
+def _quantize(rgba, n, seed=0):
+    """Up to n palette entries for an (h, w, 4) uint8 image: k-means on a sample,
+    then every pixel to its nearest entry. Returns (palette, indices).
+
+    Distances are taken on premultiplied colour: a strand texture is mostly
+    alpha 0 with leftover RGB, and plain RGBA k-means spent half the palette on
+    those invisible colours and scattered them over many indices (the PNG came
+    out 2.1x Pillow's FASTOCTREE)."""
+    flat = rgba.reshape(-1, 4).astype(np.float32)
+    feat = np.concatenate([flat[:, :3] * (flat[:, 3:] / 255.0), flat[:, 3:]], axis=1)
+    uniq = np.unique(rgba.reshape(-1, 4), axis=0)
+    if len(uniq) <= n:
+        pal = uniq.astype(np.float32)
+        return pal.astype(np.uint8), _nearest(flat, pal).astype(np.uint8)
+    rng = np.random.default_rng(seed)
+    pick = rng.choice(len(flat), min(len(flat), 60000), replace=False)
+    sample, sfeat = flat[pick], feat[pick]
+    cen = sfeat[rng.choice(len(sfeat), n, replace=False)].copy()
+    for _ in range(10):
+        lab = _nearest(sfeat, cen)
+        sums = np.zeros_like(cen)
+        np.add.at(sums, lab, sfeat)
+        cnt = np.bincount(lab, minlength=n)[:, None]
+        cen = np.where(cnt > 0, sums / np.maximum(cnt, 1), cen)
+    idx = _nearest(feat, cen)
+    # palette colour = mean straight (unpremultiplied) RGBA of each entry's pixels
+    sums = np.zeros((n, 4), np.float64)
+    np.add.at(sums, idx, flat)
+    cnt = np.bincount(idx, minlength=n)[:, None]
+    pal = np.where(cnt > 0, sums / np.maximum(cnt, 1), 0)
+    return np.round(pal).astype(np.uint8), idx.astype(np.uint8)
+
+
+def _nearest(x, pal, chunk=16384):
+    p2 = (pal ** 2).sum(1)
+    out = np.empty(len(x), np.int64)
+    for a in range(0, len(x), chunk):
+        b = x[a:a + chunk]
+        out[a:a + chunk] = np.argmin(p2[None, :] - 2 * b @ pal.T, axis=1)
+    return out
+
+
+PNG_SIG = bytes([0x89]) + b"PNG\r\n" + bytes([0x1A]) + b"\n"
+
+
+def _png(rgba, png_colors):
+    """Minimal PNG writer: palette + tRNS when png_colors, else RGBA."""
+    import zlib
+    h, w = rgba.shape[:2]
+
+    def chunk(tag, body):
+        return struct.pack(">I", len(body)) + tag + body + struct.pack(">I", zlib.crc32(tag + body))
+
+    if png_colors:
+        pal, idx = _quantize(rgba, png_colors)
+        rows, ctype = idx.reshape(h, w), 3
+        extra = chunk(b"PLTE", pal[:, :3].tobytes()) + chunk(b"tRNS", pal[:, 3].tobytes())
+    else:
+        rows, ctype, extra = rgba.reshape(h, w * 4), 6, b""
+    raw = np.hstack([np.zeros((h, 1), np.uint8), rows]).tobytes()  # filter 0 per row
+    return (PNG_SIG + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, ctype, 0, 0, 0)) +
+            extra + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
 
 
 # --- 2-5. geometry -------------------------------------------------------------------
@@ -326,6 +445,8 @@ def main(argv=None):
     ap.add_argument("--png-colors", type=int, default=256, help="palette size for textures with alpha (0 = truecolour)")
     ap.add_argument("--morph-eps", type=float, default=1e-4, help="metres; smaller morph deltas are zeroed")
     ap.add_argument("--keep-morph-normals", action="store_true")
+    if argv is None and "--" in sys.argv:  # run inside Blender
+        argv = sys.argv[sys.argv.index("--") + 1:]
     args = ap.parse_args(argv)
     data = open(args.src, "rb").read()
     g = Glb(data)

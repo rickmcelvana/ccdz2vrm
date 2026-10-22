@@ -185,4 +185,6 @@ def main(paths):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    # also runs inside Blender (`blender --background --python vrm_check.py -- a.vrm`),
+    # whose bundled Python has numpy, so the app needs no system Python
+    sys.exit(main(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:]))
