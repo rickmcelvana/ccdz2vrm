@@ -671,3 +671,12 @@ collider. Same numbers on the plain, max (2K + twist split) and web files; all p
 Looked at: head tipped 34°, fringe falls across the brow, buns and tails ride the head.
 CC: Ira's hair brings no bones, so no springs (correct). Parameters are first guesses (fringe
 stiffness 1.6 / drag 0.55; tails 0.9 / 0.45, gravity 0.15) — tune by eye per app.
+
+### Fixed 2026-10-22: CC's upper teeth became a spring [V]
+
+The §29 teeth exclusion (`via_figure`) caught only the lower teeth, which hang off the
+jaw. `CC_Base_Teeth01` hangs straight off the head, skins only the teeth mesh, and
+qualified as an item bone: Ira got one spring, and her upper teeth would have swung.
+Found when the desktop app's runner converted Ira. The rule now treats every mesh
+carrying face shape keys as part of the figure (body, teeth with the baked jaw, lashes,
+strand brows); bones that skin it are never springs. Ira: 0 springs; Alice: still 22.

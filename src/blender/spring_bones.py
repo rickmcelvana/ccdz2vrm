@@ -6,7 +6,8 @@ bones and ride them rigidly. Here they become springs so they swing.
 
 `prepare` (Blender, before export):
   * item bone = not humanoid, not a skeleton copy (`X.00N`), weighted (> 0.05)
-    on some non-body mesh and on no body vertex, below a humanoid bone, and not
+    on some item mesh and on no figure vertex (figure = body + meshes with face
+    shape keys: teeth, lashes, brows), below a humanoid bone, and not
     below a bone that skins the body (CC's teeth hang off the jaw: figure, not item);
   * chains follow single item-bone children; each chain end gets a `<bone>_tip`
     bone, because FBX keeps only pivots (Blender invents a 16.5 cm tail in a
@@ -52,6 +53,12 @@ def prepare(armature, meshes, table):
     humanoid = {b for b in table.values() if b in bones}
     body = max(meshes, key=lambda m: sum(n in m.vertex_groups for n in
                                           (table.get("left_hand"), table.get("left_foot"), table.get("head"))))
+    # The figure is the body plus every mesh that carries face shape keys: CC teeth
+    # (the jaw is baked into them), lashes, strand brows. Their bones are the
+    # figure's -- CC's upper teeth hang straight off the head and swung as a spring.
+    # Item meshes have none: adapt_daz drops non-face keys; CC hair and clothes
+    # in the five test exports carried none.
+    figure = {body} | {m for m in meshes if m.data.shape_keys and len(m.data.shape_keys.key_blocks) > 1}
     used_body, used_items = set(), {}
     for m in meshes:
         gname = {g.index: g.name for g in m.vertex_groups}
@@ -59,7 +66,7 @@ def prepare(armature, meshes, table):
             for g in v.groups:
                 if g.weight > MIN_W:
                     n = gname[g.group]
-                    if m is body:
+                    if m in figure:
                         used_body.add(n)
                     else:
                         used_items.setdefault(n, set()).add(m.name)
