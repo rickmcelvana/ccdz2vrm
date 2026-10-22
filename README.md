@@ -8,14 +8,42 @@ that follow, and optionally swinging hair. Built for
 Everything runs on your machine. Your Daz/CC content never leaves it, and no Daz/CC asset ships
 with this repo ([docs/LICENSING.md](docs/LICENSING.md)).
 
-> **Status:** the conversion works today as two Blender command-line steps (below). A
-> point-and-click app is being designed; `CLAUDE.md` says where that stands.
+## The app (Windows)
 
-## What you need
+A desktop app does the whole conversion for you: drop the `.fbx`, pick a quality, press
+**Convert to VRM**, and look at the result. It blinks, its eyes follow your pointer, and it talks
+and smiles at a click.
 
-- **Blender 4.2+** (verified on 5.2.2 LTS) with the **VRM add-on** (verified 4.7.1)
-- **Python 3** with `numpy` and `Pillow`, for the optional web tier
-- Your export from Daz Studio or Character Creator (how to export: below)
+1. Install **[Blender](https://www.blender.org/download/) 4.2 or newer** (free; verified on
+   5.2.2). The app runs the conversion inside it and finds it by itself.
+2. Run the app. If Blender lacks the **VRM add-on**, the app offers to install it (from
+   extensions.blender.org, with your OK).
+3. Drop your export on the window. The app says at once what it is (Genesis 8.1 with FACS
+   morphs, CC with the ARKit profile, ...) and what, if anything, to change in Daz or CC.
+4. Choose **Web** (3–8 MB, for latentPresence and other web apps), **Desktop** or **Max**, and
+   convert. A Daz character takes 1–3 minutes.
+
+VRMs are saved to `Documents\ccdz2vrm` unless you choose another folder.
+
+Building it from source (Node 22+, pnpm, Rust):
+
+```powershell
+pnpm install
+pnpm app          # run it in development
+pnpm app:build    # installer in src-tauri\target\release\bundle\nsis\
+pnpm gate         # typecheck, lint, tests, build, cargo fmt/clippy/test
+```
+
+Why it drives your Blender rather than shipping one: the converter is ~3,000 lines of Blender
+Python that took a lot of measuring to get right (`docs/ENVIRONMENT.md`). A browser-only version
+is the next step; this one makes the converter usable now.
+
+## Command line
+
+Everything the app does is also a few Blender commands, for scripting or other platforms. You
+need **Blender 4.2+** (verified on 5.2.2 LTS) with the **VRM add-on** (verified 4.7.1). No
+separate Python: every step runs in Blender's own (`glb_web.py` and `vrm_check.py` also run with
+a system Python that has numpy + Pillow).
 
 ## How it works
 
@@ -32,8 +60,8 @@ $bl = "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe"
 # 2. finisher: humanoid map, expressions, lookAt, limit-4 weights, materials, export
 & $bl --background --python-exit-code 1 out\c.blend --python src\blender\vrm_export.py -- out\c.vrm --name c --max-texture 1024
 
-# 3. optional web tier (3-8 MB), system Python with numpy + Pillow
-python src\blender\glb_web.py out\c.vrm out\c.web.vrm
+# 3. optional web tier (3-8 MB)
+& $bl --background --factory-startup --python-exit-code 1 --python src\blender\glb_web.py -- out\c.vrm out\c.web.vrm
 ```
 
 `--max-texture 1024` is what keeps a Daz desktop VRM near 30–50 MB instead of 222 MB. Daz hair is

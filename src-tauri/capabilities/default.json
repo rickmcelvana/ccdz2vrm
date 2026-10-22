@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core defaults only: the app's own commands do every file and process job in Rust, and the page asks for nothing else. core:default includes the webview drag-drop event the drop zone listens to.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

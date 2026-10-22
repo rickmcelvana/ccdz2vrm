@@ -571,6 +571,6 @@ if os.path.exists(out):
         from spring_bones import add_springs  # noqa: E402
         report["spring_export"] = add_springs(out, spring_spec)
 report["bytes"] = os.path.getsize(out) if os.path.exists(out) else 0
-print("RESULT " + json.dumps(report, indent=1))
+print("RESULT " + json.dumps(report))  # one line: the app reads it
 if not report["bytes"]:
     raise SystemExit("export produced no file")

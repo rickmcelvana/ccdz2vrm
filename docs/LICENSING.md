@@ -12,12 +12,17 @@ and what the **content** you feed it allows.
 | **Blender VRM Add-on** | MIT | VRM 1.0 export (installed 4.7.1). |
 | **numpy**, **Pillow** | BSD / MIT-CMU | Web tier post-pass (`glb_web.py`). |
 | **three.js**, **@pixiv/three-vrm** | MIT | Viewer and runtime check (`tools/viewer`). |
+| **Tauri 2** + `tauri-plugin-dialog` / `-opener` | MIT / Apache-2.0 | The desktop shell. |
+| **React**, **Vite**, **Vitest**, **oxlint** / **TypeScript** | MIT / Apache-2.0 | The page and its build. |
+| **memchr** (crate) | MIT / Unlicense | FBX byte scan (`fbx.rs`). |
 | **Khronos glTF validator** (`gltf-validator`, npm) | Apache-2.0 | `tools/validate`, dev dependency. |
 | **Playwright** (npm) + Chromium | Apache-2.0 / BSD | Headless three-vrm check, dev dependency. |
 
-The scripts in `src/blender/` and `scripts/` import `bpy`. The Blender Foundation's position is
-that scripts using its Python API are covered by Blender's GPL when distributed; pick this repo's
-licence with that in mind (see the open question in `CLAUDE.md`).
+The app (`app/`, `src-tauri/`) contains no Blender code: it starts the user's own Blender as a
+separate program, the way the CLI does. The scripts in `src/blender/` and `scripts/` import
+`bpy`. The Blender Foundation's position is that scripts using its Python API are covered by
+Blender's GPL when distributed, and the app's installer carries them (as `pipeline/`); pick this
+repo's licence with that in mind (see the open question in `CLAUDE.md`).
 
 Audit before adding a component: is the *weights/data* licence separate from the *code* licence?
 Does it trace to SMPL / SMPL-X / MANO / FLAME? (reject). Add it to the table above **in the same

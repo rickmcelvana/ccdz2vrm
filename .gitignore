@@ -28,3 +28,9 @@ node_modules/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# app build output
+dist/
+src-tauri/target/
+src-tauri/gen/
+*.tsbuildinfo

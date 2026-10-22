@@ -1,0 +1,45 @@
+{
+  "name": "ccdz2vrm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.3.4",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc -b",
+    "lint": "oxlint --deny-warnings",
+    "test": "vitest run",
+    "tauri": "tauri",
+    "app": "tauri dev",
+    "app:build": "tauri build",
+    "rust:fmt": "cargo fmt --manifest-path src-tauri/Cargo.toml --all --check",
+    "rust:clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
+    "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "gate": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run build && pnpm run rust:fmt && pnpm run rust:clippy && pnpm run rust:test"
+  },
+  "dependencies": {
+    "@pixiv/three-vrm": "3.5.5",
+    "@tauri-apps/api": "2.12.4",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "three": "0.185.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.3",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^26.5.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@types/three": "0.185.4",
+    "@vitejs/plugin-react": "^6.1.1",
+    "jsdom": "^30.0.1",
+    "oxlint": "^1.80.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2",
+    "vitest": "^5.0.0"
+  }
+}

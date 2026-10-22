@@ -25,10 +25,22 @@ face shape keys named **ARKit-52** and/or **Meta visemes**. Getting there is eac
 | CC3+ → VRM, ARKit 52 or Traditional profile | ✅ (§15, §24) |
 | Max tier: `--twist-split`, `--spring-bones`, `--max-texture 2048` | ✅ (§25, §29) |
 | Web tier + `vrm_check.py` / `check.html` validation | ✅ (§18) |
-| Point-and-click app (non-CLI users) | ⏳ architecture under discussion, 2026-10-22 |
+| Desktop app (Tauri 2 + React, drives the user's Blender) | ✅ 2026-10-22: finds Blender + VRM add-on (offers to install it), reads the FBX in <1 s (family, face source, advice), Web/Desktop/Max, progress + Cancel, three-vrm preview; runner converts Alice end to end (`converts_a_real_export`) |
+| Browser-only (WASM) port | ⏳ next; the Blender pipeline is its reference |
 | Repo licence | ❓ not chosen; the `bpy` scripts are GPL-bound if distributed (docs/LICENSING.md) |
 
 ## Commands
+
+```powershell
+pnpm install
+pnpm dev          # the page alone in a browser, fake backend (app/src/fakeBackend.ts): ?blender=missing|noaddon|old, ?fail=1
+pnpm app          # the real app (tauri dev)
+pnpm app:build    # NSIS installer -> src-tauri\target\release\bundle\nsis\
+pnpm gate         # tsc, oxlint, vitest (theme coverage), vite build, cargo fmt/clippy/test
+# the real pipeline through the app's runner (needs Blender + VRM add-on):
+$env:CCDZ_TEST_FBX = "G:\_dev\image-to-vrm\imports\DAZ\genesis8.1AliceTest_01.fbx"; cargo test --manifest-path src-tauri\Cargo.toml -- --ignored --nocapture
+cd tools\validate; node shots_page.mjs <dir>     # page screenshots against `pnpm dev`
+```
 
 ```powershell
 $bl = "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe"
@@ -69,7 +81,9 @@ The viewer exposes `window.__viewer`, `window.vrm`, `setExpr({aa:1})`, `frame("f
 
 | Path | What |
 |---|---|
-| `src/blender/` | Adapters, finisher, twist split, spring bones, web tier, checks |
+| `app/` | The page (React 19 + three-vrm 3.5.5); `theme.css` is the only stylesheet |
+| `src-tauri/` | The Rust shell: `blender.rs` (find/check/install), `fbx.rs` (byte-scan inspection), `pipeline.rs` (plan + run + events) |
+| `src/blender/` | Adapters, finisher, twist split, spring bones, web tier, checks (bundled as `pipeline/`) |
 | `scripts/` | FBX probes for diagnosing an export before converting it |
 | `tools/viewer/` | three-vrm viewer + pass/fail check page |
 | `tools/validate/` | Headless gate: Khronos glTF validator + three-vrm via Playwright |

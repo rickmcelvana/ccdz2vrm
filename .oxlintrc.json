@@ -1,0 +1,21 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "react", "unicorn", "oxc"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error"
+  },
+  "env": {
+    "browser": true,
+    "node": true,
+    "es2024": true
+  },
+  "ignorePatterns": ["**/dist/**", "**/target/**", "**/node_modules/**", "tools/**"],
+  "rules": {
+    "typescript/no-explicit-any": "error",
+    // `__TAURI_INTERNALS__` is the global Tauri injects; backend.ts reads it to know it is in the app.
+    // `__ccdzViewer` is the viewer's handle for scripted checks (Viewer.tsx).
+    "eslint/no-underscore-dangle": ["error", { "allow": ["__TAURI_INTERNALS__", "__ccdzViewer"] }],
+    "react/react-in-jsx-scope": "off"
+  }
+}
