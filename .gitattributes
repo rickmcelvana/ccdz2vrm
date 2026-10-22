@@ -1,0 +1,4 @@
+# Keep LF in the repo; Windows editors and tools otherwise mix in CRLF.
+* text=auto eol=lf
+*.png binary
+*.ps1 text eol=crlf

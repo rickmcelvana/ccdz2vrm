@@ -1,0 +1,10 @@
+{
+  "name": "ccdz2vrm-validate",
+  "private": true,
+  "description": "Headless checks for VRMs: Khronos glTF validator + three-vrm runtime check (tools/viewer/check.html) via Playwright",
+  "type": "module",
+  "devDependencies": {
+    "gltf-validator": "^2.0.0-dev.3.10",
+    "playwright": "^1.63.0"
+  }
+}

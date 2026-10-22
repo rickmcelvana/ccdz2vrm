@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VRM Check</title>
+<style>
+  :root { --bg: #2b2d31; --panel: #1e1f22; --fg: #e6e6e6; --muted: #9a9ca3; --accent: #7aa2f7; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
+  #app { display: grid; grid-template-columns: 1fr 280px; height: 100%; }
+  canvas { display: block; width: 100%; height: 100%; }
+  aside { background: var(--panel); padding: 12px; overflow-y: auto; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 0 6px; }
+  .row { display: grid; grid-template-columns: 90px 1fr 34px; gap: 6px; align-items: center; margin: 2px 0; }
+  .row span:last-child { color: var(--muted); text-align: right; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  button { background: #33353b; color: var(--fg); border: 1px solid #45474f; border-radius: 4px;
+    padding: 4px 8px; margin: 2px 2px 2px 0; cursor: pointer; }
+  button.on { border-color: var(--accent); color: var(--accent); }
+  #status { white-space: pre-wrap; color: var(--muted); font-size: 12px; }
+  @media (max-width: 700px) { #app { grid-template-columns: 1fr; grid-template-rows: 60% 40%; } }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/",
+  "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3.5.5/lib/three-vrm.module.min.js"
+} }
+</script>
+</head>
+<body>
+<div id="app">
+  <div id="view"></div>
+  <aside>
+    <div id="status">loading…</div>
+    <h2>View</h2>
+    <button data-view="face">Face</button><button data-view="body">Body</button>
+    <button id="pose">Arms down</button><button id="look" class="on">Follow mouse</button>
+    <button id="blinkIdle" class="on">Idle blink</button>
+    <h2>Speech test</h2>
+    <button id="talk">Talk</button><button id="sweep">Sweep all</button>
+    <h2>Presets</h2>
+    <div id="presets"></div>
+  </aside>
+</div>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
+
+// Test hook: everything an automated check needs to read back.
+const state = window.__viewer = { loaded: false, errors: [], expressions: [], meta: null, humanBones: [] };
+const origError = console.error;
+console.error = (...a) => { state.errors.push(a.map(String).join(" ")); origError(...a); };
+window.addEventListener("error", e => state.errors.push(String(e.message)));
+
+const url = new URLSearchParams(location.search).get("vrm") || "/out/test.vrm";
+const view = document.getElementById("view");
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(devicePixelRatio);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+view.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x3a3c42);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.6));
+const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(1, 2, 2); scene.add(key);
+// ?env=room lights with an environment map, as most apps do: reflections then
+// show, which plain lights hide (a roughness-0 black reads as chrome only here).
+if (new URLSearchParams(location.search).get("env") === "room")
+  scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+const camera = new THREE.PerspectiveCamera(30, 1, 0.01, 50);
+const controls = new OrbitControls(camera, renderer.domElement);
+const lookTarget = new THREE.Object3D(); scene.add(lookTarget);
+
+function resize() {
+  const r = view.getBoundingClientRect();
+  renderer.setSize(r.width, r.height, false);
+  renderer.domElement.style.width = r.width + "px"; renderer.domElement.style.height = r.height + "px";
+  camera.aspect = r.width / r.height; camera.updateProjectionMatrix();
+}
+view.style.height = "100%"; addEventListener("resize", resize); resize();
+
+let vrm, followMouse = true, idleBlink = true, talking = false, sweeping = false;
+const sliders = {};
+
+function frame(which, yawDeg = 0, dist = null, dy = 0) {
+  const head = vrm.humanoid.getNormalizedBoneNode("head").getWorldPosition(new THREE.Vector3());
+  const a = yawDeg * Math.PI / 180;
+  if (which === "face") { controls.target.copy(head).add(new THREE.Vector3(0, 0.06 + dy, 0)); dist ??= 0.75; }
+  else { controls.target.set(0, head.y * 0.55, 0); dist ??= 3.6; }
+  camera.position.copy(controls.target).add(new THREE.Vector3(Math.sin(a) * dist, which === "face" ? 0 : head.y * 0.05, Math.cos(a) * dist));
+  controls.update();
+}
+// Test hook: frame("face"|"body", yaw degrees, distance, dy metres) for repeatable screenshots.
+window.frame = frame;
+// Test hook: frameBone("leftLowerArm", yaw, pitch, dist) aims the camera at a humanoid bone.
+window.frameBone = (bone, yawDeg = 0, pitchDeg = 0, dist = 0.6) => {
+  controls.target.copy(vrm.humanoid.getNormalizedBoneNode(bone).getWorldPosition(new THREE.Vector3()));
+  const a = yawDeg * Math.PI / 180, p = pitchDeg * Math.PI / 180;
+  camera.position.copy(controls.target).add(new THREE.Vector3(Math.sin(a) * Math.cos(p), Math.sin(p), Math.cos(a) * Math.cos(p)).multiplyScalar(dist));
+  controls.update();
+};
+
+const loader = new GLTFLoader();
+loader.register(p => new VRMLoaderPlugin(p));
+loader.load(url, gltf => {
+  vrm = window.vrm = gltf.userData.vrm;
+  window.lookTarget = lookTarget;
+  if (!vrm) { state.errors.push("no VRM in file"); return; }
+  VRMUtils.rotateVRM0(vrm);
+  scene.add(vrm.scene);
+  vrm.lookAt.target = lookTarget;
+  state.loaded = true;
+  state.meta = { version: vrm.meta.metaVersion, name: vrm.meta.name, authors: vrm.meta.authors };
+  state.humanBones = Object.keys(vrm.humanoid.humanBones);
+  state.expressions = vrm.expressionManager.expressions.map(e => e.expressionName);
+  state.lookAtType = vrm.lookAt.applier?.constructor?.name;
+  const presets = ["aa","ih","ou","ee","oh","blink","blinkLeft","blinkRight","happy","angry","sad","relaxed","surprised"];
+  const box = document.getElementById("presets");
+  for (const n of presets) {
+    const row = document.createElement("label"); row.className = "row";
+    row.innerHTML = `<span>${n}</span><input type="range" min="0" max="1" step="0.01" value="0"><span>0</span>`;
+    const input = row.querySelector("input");
+    input.oninput = () => { row.lastChild.textContent = (+input.value).toFixed(2); };
+    sliders[n] = input; box.appendChild(row);
+  }
+  document.getElementById("status").textContent =
+    `${state.meta.name} · VRM ${state.meta.version}\n${state.humanBones.length} human bones · ` +
+    `${state.expressions.length} expressions\nlookAt: ${state.lookAtType}`;
+  frame("face");
+}, undefined, err => { state.errors.push("load: " + err); document.getElementById("status").textContent = "load failed: " + err; });
+
+document.querySelectorAll("[data-view]").forEach(b => b.onclick = () => frame(b.dataset.view));
+const toggle = (id, fn) => { const b = document.getElementById(id); b.onclick = () => b.classList.toggle("on", fn()); };
+toggle("look", () => (followMouse = !followMouse));
+toggle("blinkIdle", () => (idleBlink = !idleBlink));
+toggle("talk", () => (talking = !talking));
+toggle("pose", () => {
+  const down = !state.armsDown; state.armsDown = down;
+  for (const [b, s] of [["leftUpperArm", 1], ["rightUpperArm", -1]])
+    vrm.humanoid.getNormalizedBoneNode(b).rotation.z = down ? s * -1.2 : 0;
+  return down;
+});
+document.getElementById("sweep").onclick = () => { sweeping = true; state.sweepStart = performance.now(); };
+
+// Exposed so a test can set an exact expression and pose, then screenshot.
+window.setExpr = (weights) => { for (const [k, s] of Object.entries(sliders)) s.value = weights[k] ?? 0; };
+
+addEventListener("pointermove", e => {
+  if (!followMouse || !vrm) return;
+  const r = renderer.domElement.getBoundingClientRect();
+  const x = ((e.clientX - r.left) / r.width) * 2 - 1, y = -((e.clientY - r.top) / r.height) * 2 + 1;
+  lookTarget.position.copy(camera.position).add(new THREE.Vector3(x, y, -1).unproject(camera).sub(camera.position).normalize().multiplyScalar(0.8));
+});
+
+const clock = new THREE.Clock(); let nextBlink = 2;
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta(), t = clock.elapsedTime;
+  if (vrm) {
+    if (!followMouse) lookTarget.position.copy(camera.position);
+    if (talking) {
+      const v = ["aa","ih","ou","ee","oh"], i = Math.floor(t * 6) % 5, a = Math.abs(Math.sin(t * 6 * Math.PI));
+      v.forEach((n, j) => sliders[n].value = j === i ? a * 0.9 : 0);
+    }
+    if (sweeping) {
+      const names = Object.keys(sliders), k = Math.floor((performance.now() - state.sweepStart) / 700);
+      names.forEach((n, j) => sliders[n].value = j === k ? 1 : 0);
+      if (k >= names.length) sweeping = false;
+    }
+    if (idleBlink && !sweeping && t > nextBlink) {
+      const p = t - nextBlink; const w = p < 0.15 ? Math.sin(p / 0.15 * Math.PI) : 0;
+      vrm.expressionManager.setValue("blink", Math.max(w, +sliders.blink.value));
+      if (p >= 0.15) nextBlink = t + 2 + Math.random() * 3;
+    } else vrm.expressionManager.setValue("blink", +sliders.blink.value);
+    for (const [n, s] of Object.entries(sliders)) if (n !== "blink") vrm.expressionManager.setValue(n, +s.value);
+    vrm.update(dt);
+  }
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

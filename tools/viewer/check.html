@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VRM Runtime Check</title>
+<style>
+  :root { --bg: #2b2d31; --fg: #e6e6e6; --muted: #9a9ca3; --ok: #9ece6a; --bad: #f7768e; }
+  body { margin: 16px; background: var(--bg); color: var(--fg); font: 13px/1.4 system-ui, sans-serif; }
+  table { border-collapse: collapse; margin-top: 8px; }
+  td, th { padding: 3px 8px; border-bottom: 1px solid #3a3c42; text-align: right; }
+  th { color: var(--muted); font-weight: normal; }
+  td:first-child, th:first-child { text-align: left; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+  canvas { position: absolute; left: -9999px; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/",
+  "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3.5.5/lib/three-vrm.module.min.js"
+} }
+</script>
+</head>
+<body>
+<div>three-vrm runtime check · <span id="state">running…</span></div>
+<table id="out"><thead><tr><th>file</th><th>MB</th><th>load s</th><th>errors</th><th>bones</th><th>expr</th>
+<th>draw calls</th><th>tris</th><th>presets moving</th><th>blink sides</th><th>gaze L/R °</th><th>result</th></tr></thead><tbody></tbody></table>
+<pre id="detail"></pre>
+<script type="module">
+// Usage: check.html?vrm=/out/a.vrm,/out/b.vrm  -> window.__check (array of results), window.__checkDone
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
+
+const PRESETS = ["aa", "ih", "ou", "ee", "oh", "blink", "blinkLeft", "blinkRight", "happy", "angry", "sad", "relaxed", "surprised"];
+const MIN_MOVE_MM = 0.5;
+const urls = (new URLSearchParams(location.search).get("vrm") || "/out/test.vrm").split(",");
+const results = window.__check = [];
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setSize(256, 256);
+document.body.appendChild(renderer.domElement);
+
+let consoleErrors = [];
+const origError = console.error;
+console.error = (...a) => { consoleErrors.push(a.map(String).join(" ")); origError(...a); };
+
+// Largest displacement (mm) the current morph influences produce, and its x-centroid.
+function morphDisplacement(scene) {
+  let best = 0, cx = 0, cw = 0;
+  scene.traverse(o => {
+    if (!o.isMesh || !o.morphTargetInfluences) return;
+    const infl = o.morphTargetInfluences, morphs = o.geometry.morphAttributes.position;
+    if (!morphs) return;
+    const active = infl.map((w, i) => [w, i]).filter(([w]) => w > 1e-4);
+    if (!active.length) return;
+    const pos = o.geometry.attributes.position, n = pos.count, v = new THREE.Vector3();
+    for (let k = 0; k < n; k++) {
+      let dx = 0, dy = 0, dz = 0;
+      for (const [w, i] of active) { const m = morphs[i]; dx += w * m.getX(k); dy += w * m.getY(k); dz += w * m.getZ(k); }
+      const d = Math.hypot(dx, dy, dz);
+      if (d > best) best = d;
+      if (d > 1e-4) { v.fromBufferAttribute(pos, k).applyMatrix4(o.matrixWorld); cx += v.x * d; cw += d; }
+    }
+  });
+  return { mm: best * 1000, cx: cw ? cx / cw : 0 };
+}
+
+function eyeAngleDeg(vrm, target) {
+  vrm.lookAt.target = target;
+  for (let i = 0; i < 3; i++) vrm.update(1 / 60);
+  const eye = vrm.humanoid.getRawBoneNode("leftEye");
+  if (!eye) return null;
+  const q = eye.quaternion.clone();
+  vrm.lookAt.target = null; vrm.lookAt.reset?.();
+  return eye.userData.__rest ? THREE.MathUtils.radToDeg(2 * Math.acos(Math.min(1, Math.abs(q.dot(eye.userData.__rest))))) : null;
+}
+
+async function checkOne(url) {
+  consoleErrors = [];
+  const r = { url, errors: [], ok: false };
+  const t0 = performance.now();
+  const head = await fetch(url, { method: "HEAD" }).catch(() => null);
+  r.mb = head ? +(+head.headers.get("content-length") / 1e6).toFixed(2) : null;
+  const loader = new GLTFLoader();
+  loader.register(p => new VRMLoaderPlugin(p));
+  let gltf;
+  try { gltf = await loader.loadAsync(url); } catch (e) { r.errors.push("load: " + e); return r; }
+  r.loadS = +((performance.now() - t0) / 1000).toFixed(2);
+  const vrm = gltf.userData.vrm;
+  if (!vrm) { r.errors.push("no VRM"); return r; }
+  VRMUtils.rotateVRM0(vrm);
+  const scene = new THREE.Scene(); scene.add(vrm.scene); scene.add(new THREE.AmbientLight(0xffffff, 1));
+  const cam = new THREE.PerspectiveCamera(30, 1, 0.01, 50); cam.position.set(0, 1.4, 3);
+  vrm.update(0); scene.updateMatrixWorld(true);
+  renderer.info.reset(); renderer.info.autoReset = false; renderer.render(scene, cam);
+  r.drawCalls = renderer.info.render.calls; r.tris = renderer.info.render.triangles;
+  r.bones = Object.keys(vrm.humanoid.humanBones).length;
+  r.expr = vrm.expressionManager.expressions.length;
+
+  // every preset must move the mesh
+  r.presets = {};
+  for (const p of PRESETS) {
+    for (const e of vrm.expressionManager.expressions) vrm.expressionManager.setValue(e.expressionName, 0);
+    vrm.expressionManager.setValue(p, 1); vrm.expressionManager.update(); scene.updateMatrixWorld(true);
+    r.presets[p] = morphDisplacement(vrm.scene);
+  }
+  for (const e of vrm.expressionManager.expressions) vrm.expressionManager.setValue(e.expressionName, 0);
+  vrm.expressionManager.update();
+  const still = PRESETS.filter(p => !(r.presets[p].mm > MIN_MOVE_MM));
+  if (still.length) r.errors.push("presets not moving: " + still.join(","));
+  r.moving = PRESETS.length - still.length;
+
+  // blinkLeft must close the CHARACTER's left eye (same side as the leftEye bone)
+  const le = vrm.humanoid.getNormalizedBoneNode("leftEye")?.getWorldPosition(new THREE.Vector3());
+  if (le) {
+    const sideL = Math.sign(r.presets.blinkLeft.cx) === Math.sign(le.x);
+    const sideR = Math.sign(r.presets.blinkRight.cx) === -Math.sign(le.x);
+    r.blinkSides = sideL && sideR;
+    if (!r.blinkSides) r.errors.push("blinkLeft/blinkRight act on the wrong side");
+  }
+
+  // gaze: a target 45 deg left and right of the head must turn the eyes, symmetrically
+  const eye = vrm.humanoid.getRawBoneNode("leftEye");
+  if (eye && vrm.lookAt) {
+    vrm.lookAt.target = null; vrm.update(0);
+    eye.userData.__rest = eye.quaternion.clone();
+    const h = vrm.humanoid.getNormalizedBoneNode("head").getWorldPosition(new THREE.Vector3());
+    const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(vrm.scene.quaternion);
+    const side = new THREE.Vector3(1, 0, 0).applyQuaternion(vrm.scene.quaternion);
+    const mk = s => { const o = new THREE.Object3D(); o.position.copy(h).addScaledVector(fwd, 1).addScaledVector(side, s); scene.add(o); o.updateMatrixWorld(); return o; };
+    const a = eyeAngleDeg(vrm, mk(1)), b = eyeAngleDeg(vrm, mk(-1));
+    r.gaze = [a, b].map(x => x == null ? null : +x.toFixed(1));
+    if (!(a > 3 && b > 3)) r.errors.push(`eyes barely turn (${r.gaze})`);
+    else if (Math.abs(a - b) > 0.35 * Math.max(a, b)) r.errors.push(`gaze asymmetric (${r.gaze})`);
+  }
+  r.errors.push(...consoleErrors);
+  r.ok = r.errors.length === 0;
+  VRMUtils.deepDispose(vrm.scene);
+  return r;
+}
+
+const tbody = document.querySelector("#out tbody");
+for (const url of urls) {
+  const r = await checkOne(url);
+  results.push(r);
+  const tr = document.createElement("tr");
+  const cells = [url.split("/").pop(), r.mb, r.loadS, r.errors.length, r.bones, r.expr, r.drawCalls, r.tris,
+                 `${r.moving ?? "-"}/${PRESETS.length}`, r.blinkSides ?? "-", (r.gaze || []).join(" / ")];
+  tr.innerHTML = cells.map(c => `<td>${c ?? "-"}</td>`).join("") + `<td class="${r.ok ? "ok" : "bad"}">${r.ok ? "PASS" : "FAIL"}</td>`;
+  tbody.appendChild(tr);
+  if (!r.ok) document.getElementById("detail").textContent += `${url}\n  ${r.errors.join("\n  ")}\n`;
+}
+document.getElementById("state").textContent = results.every(r => r.ok) ? "all passed" : "FAILURES";
+window.__checkDone = true;
+</script>
+</body>
+</html>

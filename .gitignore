@@ -1,0 +1,30 @@
+# Your Daz/CC exports and everything made from them -- never commit (docs/LICENSING.md)
+imports/
+out/
+*.vrm
+*.vrma
+*.glb
+*.gltf
+*.fbx
+*.Fbx
+*.FBX
+*.fbxkey
+*.obj
+*.blend
+*.blend1
+*.blend2
+*.blend@
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# npm (tools/validate)
+node_modules/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
