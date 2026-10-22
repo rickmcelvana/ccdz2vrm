@@ -26,7 +26,7 @@ face shape keys named **ARKit-52** and/or **Meta visemes**. Getting there is eac
 | Max tier: `--twist-split`, `--spring-bones`, `--max-texture 2048` | ✅ (§25, §29) |
 | Web tier + `vrm_check.py` / `check.html` validation | ✅ (§18) |
 | Desktop app (Tauri 2 + React, drives the user's Blender) | ✅ 2026-10-22: finds Blender + VRM add-on (offers to install it), reads the FBX in <1 s (family, face source, advice), Web/Desktop/Max, progress + Cancel, three-vrm preview; runner converts Alice end to end (`converts_a_real_export`) |
-| Browser-only (WASM) port | ⏳ next; the Blender pipeline is its reference |
+| Browser-only (WASM) port | 📋 planned 2026-10-22 ([docs/BROWSER-PORT.md](docs/BROWSER-PORT.md)): TS core + ufbx WASM, accepted stage by stage against the Blender pipeline; Phase 0 (harness + parser spike) next |
 | Repo licence | ❓ not chosen; the `bpy` scripts are GPL-bound if distributed (docs/LICENSING.md) |
 
 ## Commands
