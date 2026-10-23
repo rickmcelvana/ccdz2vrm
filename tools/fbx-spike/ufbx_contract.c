@@ -204,6 +204,7 @@ static void write_mesh(ufbx_scene *s, ufbx_node *node, uint32_t *bone_of_node, i
 	js(",\"triangle_count\":"); ju(ntri);
 	js(",\"position\":"); ju(bin(P, nsplit * 12));
 	js(",\"uv\":"); ju(bin(UV, nsplit * 8));
+	js(",\"vertex\":"); ju(bin(pos_of_split, nsplit * 4)); // the logical vertex of each split vertex
 	js(",\"joints\":"); ju(bin(JN, nsplit * MAXW * 2));
 	js(",\"weights\":"); ju(bin(WT, nsplit * MAXW * 4));
 	js(",\"indices\":"); ju(bin(T, ntri * 12));
@@ -402,6 +403,17 @@ EXPORT("ccdz_load") int ccdz_load(const void *data, size_t size) {
 			js("}");
 		}
 		js("]}");
+	}
+	// every Texture element: Blender names its images after these (blen_read_texture_image:
+	// image.name = basename(element name)); adapt_cc looks up `<material>_Opacity` by it
+	js("],\"texture_elements\":[");
+	for (size_t i = 0; i < scene->textures.count; i++) {
+		ufbx_texture *tx = scene->textures.data[i];
+		if (i) js(",");
+		js("{\"name\":"); jstr(tx->name.data, tx->name.length);
+		js(",\"file\":"); jstr(tx->relative_filename.data, tx->relative_filename.length);
+		char h[24]; snprintf(h, sizeof h, "%016llx", (unsigned long long)fnv1a(tx->content.data, tx->content.size));
+		js(",\"fnv\":\""); js(h); js("\"}");
 	}
 	js("],\"images\":[");
 	for (size_t i = 0; i < scene->videos.count; i++) {

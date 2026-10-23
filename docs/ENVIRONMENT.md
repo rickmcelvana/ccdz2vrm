@@ -765,3 +765,36 @@ What had to be learned from Blender rather than assumed:
 Not covered by any test export: a second armature (an item with its own rig, s24's
 `daz_alice_c`). `cleanup.test.ts` builds one by hand and pins the rule, but a real export with
 one should be run through `run_clean.sh` when there is one.
+
+## 32. Browser port, Phase 2: the CC adapter in TypeScript equals Blender's [V] — 2026-10-23
+
+`app/src/convert/adaptCc.ts` (+ `pose.ts`) ports `adapt_cc.py` step for step, on top of the
+Phase 1 cleanup. Judged against Blender's adapter `.blend` (dumped by `dump_contract.py`) with
+exact names (`tools/port/run_adapt.sh cc ...`): **both CC exports pass.**
+
+| Export | Bone heads (T-posed) | Vertices, worst | Keys | Jaw angles | Materials / images | TS adapter | Blender adapter |
+|---|---|---|---|---|---|---|---|
+| Ira | ≤ 0.041 mm | ≤ 0.036 mm | 126 body, 28 teeth, 47 tongue: all within 0.1 mm | 28 measured + 6 driven, identical to Blender's report | 29 / 61 same | 0.65 s | ~13 s |
+| ALICE-00001a | ≤ 0.035 mm | ≤ 0.036 mm | the same | identical | 26 / 50 same | 0.58 s | ~13 s |
+
+The residue is float32 rounding: Blender stores posed coordinates in single precision, the port
+computes in double.
+
+Ported as Blender computes it:
+- **Skinning** is Blender's armature modifier: weighted bone offsets divided by the vertex's
+  total weight; a key's delta deforms by the matrices' linear part with the same weights, which
+  equals capturing the key posed (`apply_pose_as_rest`). T-pose: `aim_bone` as shortest-arc
+  rotations about each bone's head, applied to the bone and everything below it.
+- **Jaw bake**: the chin centroid is over Blender's vertices, not UV-split ones, so the contract
+  now carries each split vertex's source vertex (`vertex`). Measured angles are rounded to 0.1°
+  like Python's `round` (half to even); that rounded angle drives the teeth/tongue.
+- **Opacity rule (2b)** looks images up by Blender's image name, which is the FBX *Texture
+  element's* name (`Std_Eyelash_Opacity`, no extension), not the file; the shim lists every
+  Texture element for it. Neither test export triggers the rewire, as in Blender.
+- Report difference only: `cornea_triangles_removed` (640) counts triangles where Blender's
+  `cornea_faces_removed` (320) counts quads.
+
+Not exercised by a real export here: the **Traditional profile** mix (both test exports have
+the ARKit set; the earlier Traditional export is no longer in `imports/`) and the **opacity
+rewire**. The mapping tables are pinned by `adaptCc.test.ts`; run a Traditional export through
+`run_adapt.sh` when one is available.

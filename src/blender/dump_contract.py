@@ -141,6 +141,7 @@ for o in (o for o in bpy.data.objects if o.type == "MESH"):
     meshes.append({
         "name": o.name, "mesh": me.name, "vertex_count": n, "triangle_count": nt,
         "position": put(pos), "uv": put(uv[first].astype(np.float32)),
+        "vertex": put(vi.astype(np.uint32)),  # the Blender vertex each split vertex comes from
         "joints": put(joints), "weights": put(weights),
         "indices": put(tris), "triangle_material": put(tmat.astype(np.uint16)),
         "materials": [s.material.name if s.material else "" for s in o.material_slots],

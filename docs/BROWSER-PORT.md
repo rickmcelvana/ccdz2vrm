@@ -135,7 +135,9 @@ ENVIRONMENT.md section for anything measured.
    Blender's cleaned import on all six exports, exact names. Original plan:
    **Import cleanup.** Port `import_fbx_clean`'s traps that still apply, the material rules
    (metallic, roughness floor, height → normal, opacity wiring). Level 1 on raw contracts.
-2. **CC adapter** (smallest): renames, Traditional mix, visemes, T-pose, jaw bake. Level 1 on Ira
+2. ✅ **CC adapter** (2026-10-23, ENVIRONMENT §32): `adaptCc.ts` equals Blender's to 0.04 mm on
+   both CC exports. Original plan:
+   **CC adapter** (smallest): renames, Traditional mix, visemes, T-pose, jaw bake. Level 1 on Ira
    + the Traditional export.
 3. **Finisher and VRM writer**: humanoid, expressions, prune, lookAt, first person, ≤4 weights,
    materials and soft strands, texture budget. Level 2 + 3 on the CC exports (Desktop tier).
