@@ -26,7 +26,7 @@ face shape keys named **ARKit-52** and/or **Meta visemes**. Getting there is eac
 | Max tier: `--twist-split`, `--spring-bones`, `--max-texture 2048` | ✅ (§25, §29) |
 | Web tier + `vrm_check.py` / `check.html` validation | ✅ (§18) |
 | Desktop app (Tauri 2 + React, drives the user's Blender) | ✅ 2026-10-22: finds Blender + VRM add-on (offers to install it), reads the FBX in <1 s (family, face source, advice), Web/Desktop/Max, progress + Cancel, three-vrm preview; runner converts Alice end to end (`converts_a_real_export`) |
-| Browser-only (WASM) port | 📋 planned 2026-10-22 ([docs/BROWSER-PORT.md](docs/BROWSER-PORT.md)): TS core + ufbx WASM, accepted stage by stage against the Blender pipeline; Phase 0 (harness + parser spike) next |
+| Browser-only (WASM) port | 📋 planned 2026-10-22 ([docs/BROWSER-PORT.md](docs/BROWSER-PORT.md)): TS core + ufbx WASM, accepted stage by stage against the Blender pipeline; Phase 0 ✅ (ufbx WASM = Blender's import, exact, on 6 exports; ENVIRONMENT §30), Phase 1 (import cleanup) next |
 | Repo licence | ❓ not chosen; the `bpy` scripts are GPL-bound if distributed (docs/LICENSING.md) |
 
 ## Commands
@@ -86,6 +86,7 @@ The viewer exposes `window.__viewer`, `window.vrm`, `setExpr({aa:1})`, `frame("f
 | `src/blender/` | Adapters, finisher, twist split, spring bones, web tier, checks (bundled as `pipeline/`) |
 | `scripts/` | FBX probes for diagnosing an export before converting it |
 | `tools/viewer/` | three-vrm viewer + pass/fail check page |
+| `tools/fbx-spike/`, `tools/compare/` | Browser-port harness: ufbx→WASM build (Zig at `~/.toolchains`), Chromium runner, contract compare; `src/blender/dump_contract.py` is the reference side |
 | `tools/validate/` | Headless gate: Khronos glTF validator + three-vrm via Playwright |
 | `docs/ENVIRONMENT.md` | Measured findings and traps, numbered as the code cites them |
 | `docs/LICENSING.md` | Tool licences and the Daz/CC content rule |

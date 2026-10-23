@@ -680,3 +680,41 @@ qualified as an item bone: Ira got one spring, and her upper teeth would have sw
 Found when the desktop app's runner converted Ira. The rule now treats every mesh
 carrying face shape keys as part of the figure (body, teeth with the baked jaw, lashes,
 strand brows); bones that skin it are never springs. Ira: 0 springs; Alice: still 22.
+
+## 30. Browser port, Phase 0: ufbx (WASM) reproduces Blender's FBX import exactly [V] — 2026-10-22
+
+The reference harness from docs/BROWSER-PORT.md s2, Level 1, on raw imports: Blender's own
+FBX import (`dump_contract.py --raw`) against ufbx 0.23.1 compiled to WASM
+(`tools/fbx-spike`, Zig 0.17.0 `zig cc -target wasm32-wasi`) and three.js r185 `FBXLoader`,
+both run in headless Chromium. Vertices matched by position + UV, bones by base name.
+
+| Export | Size | ufbx vs Blender | FBXLoader vs Blender |
+|---|---|---|---|
+| Ira, CC3+ ARKit | 60 MB | **pass**: 101 bones, 56k verts, 443 morphs, 62 images, all exact | pass on geometry; 4 weights per vertex max |
+| ALICE-00001a, CC | 63 MB | **pass**, exact | pass |
+| Alice G8.1, FACS morphs | 142 MB | **pass**: 365 bones, 169k verts, 1,004 morphs, 16 images, exact | **renderer past 5 GB in 25 s, tab dies** |
+| Genesis 3 + Krayon hair | 147 MB | **pass**, exact (135k-vert hair) | pass on geometry; weights differ (4 max) |
+| Alice_gen8_02, G8 + Audrey hair + props | 126 MB | **pass**: 511 bones, 512k verts, bone-less chains, exact | **fail**: 363k-vert hair missing, a bone head 107 mm off |
+| male2, Genesis 2 | 33 MB | **pass**, exact | pass |
+
+"Exact" means bone heads and vertices at 0.000 mm (worst 0.001 mm), every morph within
+0.1 mm, skin weights agreeing (L1 p99 0), embedded images byte-identical. **Bone axes match
+Blender's at 0°**: with default settings Blender's importer keeps the FBX bone frames, so
+the adapters' face-pose rotation tables port as they are (the plan's first risk, closed).
+
+ufbx parse alone, in Chromium: Alice 578 ms / 794 MB WASM memory (including the copied
+file), Alice_gen8_02 211 ms / 512 MB, the G3 108 ms / 565 MB, Ira 85 ms / 243 MB.
+FBXLoader took 1–2.6 s on the files it could load and 250 MB–1.4 GB of JS heap.
+
+**Decision: ufbx.** FBXLoader drops data on real exports and cannot hold a FACS export.
+
+Measured constraints for the port:
+- **Never densify all morphs.** The harness writes every morph per vertex (350 MB for
+  Alice); with the parse that pushed one tab over its limit. The converter keeps ufbx's
+  sparse offsets and drops what no expression uses before anything dense is built.
+- ufbx splits some vertices more than Blender (RnRNecklace2: 35,767 vs 31,221) with every
+  Blender vertex still matched at 0 mm: harmless, but vertex counts are not a check.
+- **A dead tab is not reported.** When the renderer died, Playwright's `crash` event and
+  `waitForFunction` timeout both stayed silent and the run hung for hours, twice. Every
+  harness run sits under a hard `timeout` (`tools/fbx-spike/run_all.sh`).
+- `size_t` is 32-bit in wasm32: shifting it by 32 is undefined (it broke the image hash).

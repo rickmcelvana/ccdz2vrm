@@ -18,7 +18,7 @@ parts are the FBX importer and three mesh operations.
 
 | Blender does today | Where | Browser replacement |
 |---|---|---|
-| FBX import (bones, skin weights, shape keys, embedded textures, materials) | `common.import_fbx_clean` | **ufbx** (single C file, MIT or Unlicense, skinning + blend shapes + embedded textures, CI-tested on WASM **[R]**) compiled to WASM behind a small C shim that hands flat typed arrays to JS. Fallback candidate: three.js `FBXLoader` (pure JS, weaker on odd exports). Phase 0 picks one by measurement. |
+| FBX import (bones, skin weights, shape keys, embedded textures, materials) | `common.import_fbx_clean` | **ufbx** 0.23.1 (single C file, MIT or Unlicense) compiled to WASM with Zig behind a small C shim that hands flat arrays to JS. Chosen in Phase 0 **[V]**: identical to Blender's import on all six test exports; three.js `FBXLoader` died or dropped meshes on the Daz ones (ENVIRONMENT §30). |
 | Import traps: 0.01 scale, animation take, extra armatures, skeleton copies (`X.00N`), bone-less props on empties, Metallic 1.0, Phong→roughness 0, bump read as normal | `import_fbx_clean`, `height_to_normal` | Plain TS over the parsed scene. Several traps are Blender-importer artefacts and may not exist with ufbx (leaf-bone tails, Metallic 1.0); each is re-checked, not assumed. |
 | Pose → rest with every shape key exact (A-pose → T-pose) | `apply_pose_as_rest`, `tpose_arms`, `aim_bone` | LBS in TS: skin the base and each key with the posed matrices, write back, re-bind. Pure math (already how the Python does it, one key at a time). |
 | Daz face without FACS: pose face bones, freeze as shape keys | `adapt_daz` §4 | FK pose evaluation + LBS capture. The rotation tables (`op_rotate`, axes in Blender's bone frames) must be re-expressed in the parser's bone frames: measured in Phase 0. |
@@ -121,7 +121,12 @@ the tolerance table are committed.
 Each phase ends with the harness green for its level on the whole test set, a commit, and an
 ENVIRONMENT.md section for anything measured.
 
-0. **Harness and parser spike.** Write `dump_contract.py` (raw-import and adapter modes) and
+0. ✅ **Harness and parser spike** (2026-10-22, ENVIRONMENT §30): ufbx reproduces Blender's
+   import exactly on all six test exports (bones, vertices, 1,004 FACS morphs, weights,
+   images; bone axes at 0°); FBXLoader dies on the FACS export and drops a 363k-vert hair.
+   **Parser: ufbx.** Tools: `src/blender/dump_contract.py`, `tools/compare/contract.mjs`,
+   `tools/fbx-spike/`. Original plan for this phase:
+   **Harness and parser spike.** Write `dump_contract.py` (raw-import and adapter modes) and
    `tools/compare/`. Build ufbx to WASM (Emscripten) with a shim; dump the raw import of every
    test file and compare to Blender's raw import (Level 1, before any adapter logic). Measure parse
    time and peak memory on the largest file. Same for `FBXLoader`. **Decide the parser**, and

@@ -1,0 +1,184 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>FBX parser spike</title>
+<!-- Driven by run.mjs (headless Chromium). Parses one FBX with ufbx (WASM) and three.js
+     FBXLoader, writes each as a contract (docs/BROWSER-PORT.md s2) through POST /save. -->
+<script type="importmap">
+  { "imports": { "three": "/node_modules/three/build/three.module.js", "three/addons/": "/node_modules/three/examples/jsm/" } }
+</script>
+<script type="module">
+  import * as THREE from 'three';
+  import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+
+  const q = new URLSearchParams(location.search);
+  const fbxPath = q.get('fbx');
+  const name = q.get('name');
+  const which = (q.get('parsers') ?? 'ufbx,fbxloader').split(',');
+  const report = (window.__spike = { done: false, results: {} });
+  const mb = (n) => Math.round(n / 1e5) / 10;
+  const heap = () => performance.memory?.usedJSHeapSize ?? 0;
+
+  async function save(file, data) {
+    const r = await fetch(`/save?file=${encodeURIComponent(file)}`, { method: 'POST', body: data });
+    if (!r.ok) throw new Error(`save ${file}: ${r.status}`);
+  }
+
+  // --- ufbx (WASM, wasm32-wasi reactor: stub WASI, nothing touches files) ------------
+  async function runUfbx(bytes) {
+    let memory;
+    const wasi = new Proxy({}, { get: (_, k) => (k === 'fd_write' ? fdWrite : () => 52) });
+    function fdWrite(fd, iovs, n, written) {
+      const v = new DataView(memory.buffer);
+      let total = 0;
+      for (let i = 0; i < n; i++) total += v.getUint32(iovs + i * 8 + 4, true);
+      v.setUint32(written, total, true);
+      return 0;
+    }
+    const t0 = performance.now();
+    const { instance } = await WebAssembly.instantiateStreaming(fetch('ufbx_contract.wasm'), { wasi_snapshot_preview1: wasi });
+    const x = instance.exports;
+    memory = x.memory;
+    x._initialize();
+    const ptr = x.ccdz_alloc(bytes.byteLength);
+    new Uint8Array(memory.buffer, ptr, bytes.byteLength).set(bytes);
+    const t1 = performance.now();
+    if (q.get('parse_only')) {
+      const rc0 = x.ccdz_parse_only(ptr, bytes.byteLength);
+      const tp = performance.now();
+      if (rc0) throw new Error('parse failed');
+      return { parse_only: true, parse_ms: Math.round(tp - t1), wasm_memory_mb: mb(memory.buffer.byteLength) };
+    }
+    const rc = x.ccdz_load(ptr, bytes.byteLength);
+    const t2 = performance.now();
+    x.ccdz_free(ptr);
+    if (rc) throw new Error(new TextDecoder().decode(new Uint8Array(memory.buffer, x.ccdz_error(), 1024)).split('\0')[0]);
+    const json = new Uint8Array(memory.buffer, x.ccdz_json(), x.ccdz_json_size()).slice();
+    const bin = new Uint8Array(memory.buffer, x.ccdz_bin(), x.ccdz_bin_size()).slice();
+    const wasmMB = mb(memory.buffer.byteLength);
+    x.ccdz_reset();
+    await save(`${name}.ufbx.json`, json);
+    await save(`${name}.ufbx.bin`, bin);
+    return { parse_ms: Math.round(t2 - t1), total_ms: Math.round(performance.now() - t0), wasm_memory_mb: wasmMB };
+  }
+
+  // --- three.js FBXLoader -----------------------------------------------------------------
+  // Positions are taken as the loader leaves them (file pose, mesh world matrix), scaled by
+  // the file's UnitScaleFactor (cm -> m): the loader stores it but does not apply it.
+  async function runFbxLoader(bytes) {
+    const h0 = heap();
+    const t0 = performance.now();
+    const root = new FBXLoader().parse(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), '');
+    const t1 = performance.now();
+    root.updateMatrixWorld(true);
+    const unit = (root.userData.unitScaleFactor ?? 1) / 100;
+    const S = new THREE.Matrix4().makeScale(unit, unit, unit);
+    const chunks = [];
+    let size = 0;
+    const put = (arr) => {
+      const pad = (4 - (size % 4)) % 4;
+      if (pad) { chunks.push(new Uint8Array(pad)); size += pad; }
+      const off = size;
+      const u8 = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength).slice();
+      chunks.push(u8);
+      size += u8.byteLength;
+      return off;
+    };
+    const bones = [];
+    const boneIndex = new Map();
+    root.traverse((o) => {
+      if (!o.isBone) return;
+      boneIndex.set(o, bones.length);
+      const m = new THREE.Matrix4().multiplyMatrices(S, o.matrixWorld);
+      bones.push({ name: o.name, parent: o.parent?.isBone ? o.parent.name : null, rest_from: 'file_pose', matrix: m.elements.slice() });
+    });
+    const meshes = [];
+    const v = new THREE.Vector3();
+    root.traverse((o) => {
+      if (!o.isMesh) return;
+      const g = o.geometry;
+      const pos = g.attributes.position, uv = g.attributes.uv;
+      const M = new THREE.Matrix4().multiplyMatrices(S, o.matrixWorld);
+      const L = new THREE.Matrix3().setFromMatrix4(M);
+      // the loader writes one vertex per triangle corner: fold equal (position, uv) pairs
+      const key = new Map();
+      const splitOf = new Uint32Array(pos.count);
+      const firstOf = [];
+      for (let i = 0; i < pos.count; i++) {
+        const k = `${pos.getX(i)},${pos.getY(i)},${pos.getZ(i)},${uv ? uv.getX(i) : 0},${uv ? uv.getY(i) : 0}`;
+        let id = key.get(k);
+        if (id === undefined) { id = firstOf.length; key.set(k, id); firstOf.push(i); }
+        splitOf[i] = id;
+      }
+      const n = firstOf.length;
+      const P = new Float32Array(n * 3), UV = new Float32Array(n * 2);
+      const J = new Uint16Array(n * 8), W = new Float32Array(n * 8);
+      const si = g.attributes.skinIndex, sw = g.attributes.skinWeight;
+      const bonesOf = o.isSkinnedMesh ? o.skeleton.bones.map((b) => boneIndex.get(b) ?? 0) : [];
+      firstOf.forEach((i, s) => {
+        v.fromBufferAttribute(pos, i).applyMatrix4(M);
+        P.set([v.x, v.y, v.z], s * 3);
+        if (uv) UV.set([uv.getX(i), uv.getY(i)], s * 2);
+        if (si && sw) for (let k = 0; k < 4; k++) { J[s * 8 + k] = bonesOf[si.getComponent(i, k)] ?? 0; W[s * 8 + k] = sw.getComponent(i, k); }
+      });
+      const index = g.index ? Array.from(g.index.array) : [...Array(pos.count).keys()];
+      const T = new Uint32Array(index.length);
+      index.forEach((c, k) => (T[k] = splitOf[c]));
+      const TM = new Uint16Array(T.length / 3);
+      for (const grp of g.groups) for (let t = grp.start / 3; t < (grp.start + grp.count) / 3; t++) TM[t] = grp.materialIndex ?? 0;
+      const morphs = (g.morphAttributes.position ?? []).map((ma, k) => {
+        const D = new Float32Array(n * 3);
+        firstOf.forEach((i, s) => {
+          v.fromBufferAttribute(ma, i).applyMatrix3(L);
+          D.set([v.x, v.y, v.z], s * 3);
+        });
+        const nm = Object.keys(o.morphTargetDictionary ?? {}).find((key2) => o.morphTargetDictionary[key2] === k) ?? `morph${k}`;
+        return { name: nm, shape: nm, inbetweens: 0, delta: put(D) };
+      });
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      meshes.push({
+        name: o.name, mesh: g.name ?? '', vertex_count: n, triangle_count: T.length / 3,
+        position: put(P), uv: put(UV), joints: put(J), weights: put(W), indices: put(T), triangle_material: put(TM),
+        materials: mats.map((m) => m.name), morphs,
+      });
+    });
+    const materials = [];
+    const seen = new Set();
+    root.traverse((o) => {
+      if (!o.isMesh) return;
+      for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+        if (seen.has(m)) continue;
+        seen.add(m);
+        const textures = ['map', 'normalMap', 'bumpMap', 'alphaMap', 'specularMap', 'emissiveMap']
+          .filter((k) => m[k]).map((k) => ({ prop: k, file: m[k].name ?? '', bytes: 0, fnv: '' }));
+        materials.push({ name: m.name, textures });
+      }
+    });
+    const t2 = performance.now();
+    const doc = { source: 'fbxloader', three: THREE.REVISION, unit_scale: unit, bones, meshes, materials, images: [] };
+    const bin = new Uint8Array(size);
+    let off = 0;
+    for (const c of chunks) { bin.set(c, off); off += c.byteLength; }
+    await save(`${name}.fbxloader.json`, new TextEncoder().encode(JSON.stringify(doc)));
+    await save(`${name}.fbxloader.bin`, bin);
+    return { parse_ms: Math.round(t1 - t0), total_ms: Math.round(t2 - t0), js_heap_growth_mb: mb(heap() - h0) };
+  }
+
+  (async () => {
+    try {
+      const t = performance.now();
+      const bytes = new Uint8Array(await (await fetch(`/file?path=${encodeURIComponent(fbxPath)}`)).arrayBuffer());
+      report.fetch_ms = Math.round(performance.now() - t);
+      report.fbx_mb = mb(bytes.byteLength);
+      for (const p of which) {
+        try {
+          report.results[p] = await (p === 'ufbx' ? runUfbx(bytes) : runFbxLoader(bytes));
+        } catch (e) {
+          report.results[p] = { error: String(e?.stack ?? e) };
+        }
+      }
+    } catch (e) {
+      report.error = String(e);
+    }
+    report.done = true;
+  })();
+</script>

@@ -15,8 +15,10 @@ and what the **content** you feed it allows.
 | **Tauri 2** + `tauri-plugin-dialog` / `-opener` | MIT / Apache-2.0 | The desktop shell. |
 | **React**, **Vite**, **Vitest**, **oxlint** / **TypeScript** | MIT / Apache-2.0 | The page and its build. |
 | **memchr** (crate) | MIT / Unlicense | FBX byte scan (`fbx.rs`). |
+| **ufbx** 0.23.1 | MIT or Unlicense | FBX parser for the browser port (`tools/fbx-spike`, fetched at build time). |
+| **Zig** 0.17.0 (build tool only) | MIT | Compiles ufbx to WASM; nothing of it ships. |
 | **Khronos glTF validator** (`gltf-validator`, npm) | Apache-2.0 | `tools/validate`, dev dependency. |
-| **Playwright** (npm) + Chromium | Apache-2.0 / BSD | Headless three-vrm check, dev dependency. |
+| **Playwright** (npm) + Chromium | Apache-2.0 / BSD | Headless three-vrm check and the port harness, dev dependency. |
 
 The app (`app/`, `src-tauri/`) contains no Blender code: it starts the user's own Blender as a
 separate program, the way the CLI does. The scripts in `src/blender/` and `scripts/` import
