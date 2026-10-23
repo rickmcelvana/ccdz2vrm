@@ -973,3 +973,41 @@ morphs", and textures against the unreduced file — two lossy encodings of a no
 from each other more than either from the source (G3 BeadPlastic: Blender 23/255 off the
 lossless 512 px, ours 21, the two 14 apart); texture diffs are premultiplied (colour under a
 transparent texel is never seen).
+
+## 36. Browser port, Phase 6: the max tier in TypeScript [V] — 2026-10-23
+
+`springBones.ts` ports `spring_bones.py` and `twistSplit.ts` ports `twist_split.py`. The finisher
+options are `springBones` and `twistSplit`. References come from `tools/port/make_max_refs.sh`;
+`tools/port/run_max.sh` compares structure against Blender's max file and geometry against
+Blender's plain file (`vrm.ts --geometry`).
+
+- **Structure.** All five match Blender's max files: humanoid, expressions, 8 node constraints
+  (Daz) and, on Alice, 22 springs with identical joints and parameters. Her 9 colliders agree
+  within 0.001 mm. CC and G8/G3 have no item bones, so there are no springs (same as Blender).
+- **Geometry** equals the plain export everywhere: Alice ≤ 0.001 mm. G8's §34 RRTop residual
+  is the only failure.
+- **Validators.** Khronos reports 0 errors and three-vrm loads every file.
+- **Deliberate difference: the twist split runs after the export T-pose.** `vrm_export.py`
+  splits first, then lets the add-on's T-pose run over the new bones, which goes wrong in three
+  ways:
+  1. The bend bones, which hang off the driver chain, miss the pose.
+  2. `_realign`'s rewritten inverse bind pins their skin where it was.
+  3. The zero-length `_pre` → `_drv` step slips past the add-on's `float_info.epsilon` guard,
+     turning `_pre` by float noise. On Alice's right forearm that was 94°; `_drv` was then
+     turned back by 93.5°, but the roll stays.
+
+  Blender's max file is therefore up to 1.45 mm (hands) off its own plain file. Ours equals
+  the plain file.
+- **Twist behaviour in three-vrm** (`tools/validate/twist.mjs`, 90° roll, worst slice's
+  radius): plain 0.75–0.83; Blender split 0.915–0.932 (asymmetric, from the noise roll); ours
+  0.920–0.924 on all arms of Alice, G8 and G3.
+- **Springs** (`tools/validate/springs.mjs` → `spring_test.js`, Alice):
+
+  | | Blender | Ours |
+  |---|---|---|
+  | Idle drift | 1.02 cm | 0.96 cm |
+  | Lag during the head shake | 8.02 cm | 8.01 cm |
+  | Drift after settling | 0.83 cm | 0.88 cm |
+
+  The head-collider clearance is 2.6 cm on both.
+- **Follow-up:** `vrm_export.py` should T-pose before splitting, as the port does.

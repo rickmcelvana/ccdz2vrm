@@ -1,10 +1,10 @@
 // The VRM finisher: an adapted contract -> a VRM 1.0 file. A port of src/blender/vrm_export.py
-// (desktop tier: no decimation, twist split or spring bones yet) plus what the VRM add-on and
+// (desktop, web and max tiers) plus what the VRM add-on and
 // Blender's glTF exporter do on the way out. Step numbers are vrm_export.py's.
 //
 // Deliberate differences from the Blender file (ENVIRONMENT.md s33):
-//  - bones are written with identity rotations (head positions only); runtimes normalise
-//    bones anyway, and our own joint frames make the twist/spring passes simpler later;
+//  - bones are written with identity rotations (head positions only; the twist split's limb
+//    bones get one limb-aligned frame); runtimes normalise bones anyway;
 //  - no KHR_materials_specular textures and no empty vertex-colour sets (Blender's exporter
 //    adds both; nothing of ours reads them);
 //  - morph targets carry no normals (three-vrm lights expressions with the base normals,
@@ -16,8 +16,10 @@ import { MAXW, type Contract, type Material, type Mesh, type Pbr } from './contr
 import { GlbBuilder, type Json } from './glb.ts';
 import { heightToNormal, mimeOf, palettePng, resize, stripPng, type ImageCodec, type Pixels } from './images.ts';
 import { decimateMesh, sourceCount, type DecimateReport } from './decimate.ts';
-import { Pose } from './pose.ts';
+import { Pose, type Vec3 } from './pose.ts';
 import { vrmTPose } from './vrmTPose.ts';
+import { prepareSprings, springExtension, type SpringReport } from './springBones.ts';
+import { qconj, qmul, qrot, qunit, restructureTwist, twistConstraints, twistFrames, type Quat } from './twistSplit.ts';
 import { ADDON_PRESETS, ARKIT_SHAPE_KEYS, BONE_TABLES, detectBoneTable, EYES, OVERRIDE_BLINK, PRESETS } from './vrmTables.ts';
 
 export type FinishOptions = {
@@ -34,6 +36,10 @@ export type FinishOptions = {
   web?: boolean;
   /** vrm_export.py --max-mesh-verts: reduce meshes with more source vertices (decimate.ts). */
   maxMeshVerts?: number | null;
+  /** Max tier, vrm_export.py --spring-bones: item bones swing (springBones.ts). */
+  springBones?: boolean;
+  /** Max tier, vrm_export.py --twist-split: Daz arm twist over bend + twist bones (twistSplit.ts). */
+  twistSplit?: boolean;
 };
 
 const WEB_NORMAL_PX = 512;
@@ -52,6 +58,9 @@ export type FinishReport = {
   materials: Record<string, { mode: string; clear_texels: number; soft_share: number; merged_opacity?: boolean }>;
   textures: { count: number; reencoded: number; bytes: number };
   decimated: Record<string, DecimateReport>;
+  spring_bones?: SpringReport;
+  twist_split?: Record<string, string>;
+  spring_export?: { springs: number; joints: number; colliders: number };
 };
 
 const SOFT_SHARE = 0.15;
@@ -70,8 +79,8 @@ export async function finish(adapted: Contract, codec: ImageCodec, opts: FinishO
     decimated: {},
   };
   const bones = adapted.bones.map((b) => ({ ...b, matrix: b.matrix.slice() }));
-  const boneIndex = new Map(bones.map((b, i) => [b.name, i]));
-  const head = (name: string) => {
+  let boneIndex = new Map(bones.map((b, i) => [b.name, i]));
+  const head = (name: string): Vec3 => {
     const m = bones[boneIndex.get(name)!]!.matrix;
     return [m[12]!, m[13]!, m[14]!];
   };
@@ -80,6 +89,10 @@ export async function finish(adapted: Contract, codec: ImageCodec, opts: FinishO
   const tableName = detectBoneTable(new Set(boneIndex.keys()));
   report.bone_table = tableName;
   const table = tableName ? BONE_TABLES[tableName]! : {};
+  // max tier: spring bones before the export T-pose, as in vrm_export.py (tips ride the pose)
+  const springs = opts.springBones && tableName ? prepareSprings(bones, adapted.meshes, table) : null;
+  if (springs) report.spring_bones = springs.report;
+  boneIndex = new Map(bones.map((b, i) => [b.name, i]));
   const humanBones: Record<string, { node: number }> = {};
   for (const [vrm, bone] of Object.entries(table)) {
     const i = boneIndex.get(bone);
@@ -115,6 +128,20 @@ export async function finish(adapted: Contract, codec: ImageCodec, opts: FinishO
 
   // --- the add-on's automatic T-pose (on export), baked as the rest pose -------------------------
   report.t_pose_deg = vrmTPose(new Pose(bones), humanBones, meshes);
+
+  // --- max tier: the twist split, on the T-posed skeleton. vrm_export.py splits first and lets
+  // the export T-pose run over the new bones: the bend bones (off the driver chain) then miss
+  // the pose, its _realign pins their skin where it was, and the zero-length _pre -> _drv step
+  // turns _pre by float noise (94 deg on Alice's right forearm, then turned back but for the
+  // roll) -- up to 1.45 mm off its own plain export (ENVIRONMENT s36). Split after the pose,
+  // the rest mesh is the plain export's, as the split intends.
+  const twist = opts.twistSplit ? restructureTwist(bones, tableName) : null;
+  if (opts.twistSplit && !twist) throw new Error(`twist split: no limb chains for bone table ${tableName}`);
+  if (twist) {
+    boneIndex = new Map(bones.map((b, i) => [b.name, i]));
+    for (const [vrm, bone] of Object.entries(twist.remap)) humanBones[vrm] = { node: boneIndex.get(bone)! };
+    report.twist_split = twist.remap;
+  }
 
   // --- 2. expressions ------------------------------------------------------------------------------
   const hasKey = new Map<string, number[]>();
@@ -169,12 +196,29 @@ export async function finish(adapted: Contract, codec: ImageCodec, opts: FinishO
   }
 
   // --- 8. write: bones, meshes, skin, VRMC_vrm -----------------------------------------------------------
+  // world frames: identity, but the twist split's limb-aligned bones (from the final heads)
+  const frames = twist ? twistFrames(twist.chains, head) : new Map<string, Quat>();
+  const frame = (i: number): Quat => frames.get(bones[i]!.name) ?? [0, 0, 0, 1];
   bones.forEach((b, i) => {
     const p = b.parent === null ? undefined : boneIndex.get(b.parent);
     const h = head(b.name), ph = p === undefined ? [0, 0, 0] : head(bones[p]!.name);
-    g.nodes.push({ name: b.name, translation: h.map((x, c) => x - ph[c]!) });
+    const pq = p === undefined ? ([0, 0, 0, 1] as Quat) : frame(p), q = frame(i);
+    const node: Json = { name: b.name, translation: qrot(qconj(pq), [h[0]! - ph[0]!, h[1]! - ph[1]!, h[2]! - ph[2]!]) };
+    const lq = qunit(qmul(qconj(pq), q));
+    if (Math.abs(lq[3]) < 1 - 1e-9) node.rotation = lq;
+    g.nodes.push(node);
     if (p === undefined) (g.scenes[0]!.nodes as number[]).push(i);
   });
+  /** inverse(T(head) R(frame)), column-major */
+  const inverseBind = (i: number): number[] => {
+    const iq = qconj(frame(i)), t = qrot(iq, head(bones[i]!.name));
+    const cols = ([[1, 0, 0], [0, 1, 0], [0, 0, 1]] as const).map((e) => qrot(iq, [e[0], e[1], e[2]]));
+    return [...cols[0]!, 0, ...cols[1]!, 0, ...cols[2]!, 0, -t[0], -t[1], -t[2], 1];
+  };
+  if (twist) {
+    for (const [node, ext] of twistConstraints(twist.chains, (n) => boneIndex.get(n)!)) g.nodes[node]!.extensions = { VRMC_node_constraint: ext };
+    g.extensionsUsed.push('VRMC_node_constraint');
+  }
   bones.forEach((b, i) => {
     const p = b.parent === null ? undefined : boneIndex.get(b.parent);
     if (p !== undefined) ((g.nodes[p]!.children ??= []) as number[]).push(i);
@@ -182,10 +226,7 @@ export async function finish(adapted: Contract, codec: ImageCodec, opts: FinishO
   const anySkinned = skin.some((s) => s.report.skinned);
   if (anySkinned && !opts.web) {
     const ibm = new Float32Array(bones.length * 16);
-    bones.forEach((b, i) => {
-      const h = head(b.name);
-      ibm.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -h[0]!, -h[1]!, -h[2]!, 1], i * 16);
-    });
+    bones.forEach((_, i) => ibm.set(inverseBind(i), i * 16));
     g.skins.push({ name: opts.name, joints: bones.map((_, i) => i), inverseBindMatrices: out.accessor(ibm, 'MAT4') });
   }
   const meshNode: number[] = [];
@@ -207,10 +248,7 @@ export async function finish(adapted: Contract, codec: ImageCodec, opts: FinishO
       const usedJoints = [...new Set(Array.from(s.joints).filter((_, k) => w8[k]! > 0))].toSorted((a, b) => a - b);
       const remap = new Map(usedJoints.map((j, k) => [j, k]));
       const ibm = new Float32Array(usedJoints.length * 16);
-      usedJoints.forEach((j, k) => {
-        const h = head(bones[j]!.name);
-        ibm.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -h[0]!, -h[1]!, -h[2]!, 1], k * 16);
-      });
+      usedJoints.forEach((j, k) => ibm.set(inverseBind(j), k * 16));
       g.skins.push({ name: m.name, joints: usedJoints, inverseBindMatrices: out.accessor(ibm, 'MAT4') });
       skinIndex = g.skins.length - 1;
       const local = Uint16Array.from(s.joints, (j, k) => (w8[k]! > 0 ? remap.get(j)! : 0));
@@ -285,6 +323,18 @@ export async function finish(adapted: Contract, codec: ImageCodec, opts: FinishO
     overrideLookAt: 'none',
     overrideMouth: 'none',
   });
+  if (springs) {
+    const ext = springExtension(springs.spec, humanBones, (n) => boneIndex.get(n), (node, p) => {
+      const h = head(bones[node]!.name);
+      return qrot(qconj(frame(node)), [p[0] - h[0]!, p[1] - h[1]!, p[2] - h[2]!]);
+    });
+    if (ext) {
+      g.extensionsUsed.push('VRMC_springBone');
+      g.extensions.VRMC_springBone = ext;
+      const list = ext.springs as { joints: unknown[] }[];
+      report.spring_export = { springs: list.length, joints: list.reduce((a, s) => a + s.joints.length, 0), colliders: (ext.colliders as unknown[]).length };
+    }
+  }
   g.extensionsUsed.push('VRMC_vrm');
   g.extensions.VRMC_vrm = {
     specVersion: '1.0',

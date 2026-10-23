@@ -5,6 +5,9 @@
 //    name -- and tools/compare/contract.mjs judges geometry, weights and morphs.
 // 2. Here: humanoid map, expressions (mesh, key, weight per expression), lookAt, first
 //    person, materials (alpha mode, factors, which textures) and texture pixels.
+//    Max tier: node constraints (type, source, axis, weight per node, by name) and spring bones
+//    (joints and parameters per spring; colliders by node, shape and radius, positions compared
+//    in world space -- the two writers give bones different frames).
 // 3. --original <unreduced.vrm> (web tier): a mesh the two files reduced differently is judged
 //    against the unreduced one -- how far its vertices end up from the reduced surface, ours
 //    against Blender's -- and ours must keep original vertices with their original morphs.
@@ -171,6 +174,10 @@ const [refPath, newPath, ...flags] = process.argv.slice(2);
 // web tier: both sides zero morph deltas under 0.1 mm, so a vertex at that edge can differ by it
 const morphMm = flags.includes('--morph-mm') ? flags[flags.indexOf('--morph-mm') + 1]! : null;
 const original = flags.includes('--original') ? flags[flags.indexOf('--original') + 1]! : null;
+// max tier: the twist split must leave the rest mesh as the plain export has it, and Blender's
+// own split file misses that by float noise (ENVIRONMENT s36) -- so geometry is judged against
+// the plain file, bones by name and head only (the split re-hangs the arm bones by design)
+const geometryRef = flags.includes('--geometry') ? flags[flags.indexOf('--geometry') + 1]! : null;
 if (!refPath || !newPath) throw new Error('usage: node tools/compare/vrm.ts ref.vrm new.vrm');
 const A = readGlb(refPath), B = readGlb(newPath);
 const O = original ? readGlb(original) : null;
@@ -213,6 +220,64 @@ if (offErr > 0.001 || !rangesSame) fails.push('lookAt differs');
 const fp = (g: Glb, v: any) => v.firstPerson.meshAnnotations.map((m: any) => `${nodeName(g, m.node)}:${m.type}`).sort().join(' ');
 if (fp(A, va) !== fp(B, vb)) fails.push('firstPerson differs');
 lines.push(`firstPerson ${fp(A, va) === fp(B, vb) ? 'same' : 'DIFFERS'}`);
+
+// --- max tier: node constraints and spring bones ------------------------------------------------
+function nodeWorld(g: Glb): (i: number) => Mat4 {
+  const parent = new Map<number, number>();
+  g.json.nodes.forEach((n: any, i: number) => (n.children ?? []).forEach((c: number) => parent.set(c, i)));
+  const memo = new Map<number, Mat4>();
+  const world = (i: number): Mat4 => {
+    if (!memo.has(i)) memo.set(i, parent.has(i) ? mul(world(parent.get(i)!), trs(g.json.nodes[i])) : trs(g.json.nodes[i]));
+    return memo.get(i)!;
+  };
+  return world;
+}
+const constraints = (g: Glb) => new Map<string, string>(g.json.nodes.flatMap((n: any) => {
+  const c = n.extensions?.VRMC_node_constraint?.constraint;
+  if (!c) return [];
+  const [kind, v] = Object.entries(c)[0] as [string, any];
+  return [[n.name, `${kind} from ${nodeName(g, v.source)} ${v.aimAxis ?? v.rollAxis ?? v.rotation ?? ''} w${v.weight ?? 1}`]];
+}));
+const ca = constraints(A), cb = constraints(B);
+const conDiff = [...new Set([...ca.keys(), ...cb.keys()])].filter((n) => ca.get(n) !== cb.get(n));
+if (ca.size || cb.size) lines.push(`node constraints ${ca.size}/${cb.size}, ${conDiff.length} differ`);
+for (const n of conDiff.slice(0, 5)) fails.push(`node constraint ${n}: ${ca.get(n) ?? '-'} | vs | ${cb.get(n) ?? '-'}`);
+
+const sprA = A.json.extensions?.VRMC_springBone, sprB = B.json.extensions?.VRMC_springBone;
+if (sprA || sprB) {
+  if (!sprA || !sprB) fails.push(`spring bones only in ${sprA ? 'reference' : 'candidate'}`);
+  else {
+    const joints = (g: Glb, sp: any) => sp.joints.map((j: any) => `${nodeName(g, j.node)}:${j.stiffness}/${j.gravityPower}/${j.dragForce}/${j.hitRadius}/${(j.gravityDir ?? []).join(',')}`).join(' ');
+    const springsB = new Map(sprB.springs.map((sp: any) => [sp.name, sp]));
+    let springOk = 0;
+    for (const sp of sprA.springs) {
+      const o: any = springsB.get(sp.name);
+      if (!o) fails.push(`spring ${sp.name} missing`);
+      else if (joints(A, sp) !== joints(B, o) || (sp.colliderGroups ?? []).length !== (o.colliderGroups ?? []).length) fails.push(`spring ${sp.name}: ${joints(A, sp)} | vs | ${joints(B, o)}`);
+      else springOk++;
+    }
+    if (sprB.springs.length !== sprA.springs.length) fails.push(`springs ${sprA.springs.length} vs ${sprB.springs.length}`);
+    // colliders: same node, shape and radius; offsets compared as world points
+    const wa = nodeWorld(A), wb = nodeWorld(B);
+    const at = (M: Mat4, p: number[]) => [0, 1, 2].map((r) => M[r]! * p[0]! + M[4 + r]! * p[1]! + M[8 + r]! * p[2]! + M[12 + r]!);
+    const shape = (g: Glb, w: (i: number) => Mat4, c: any) => {
+      const [kind, v] = Object.entries(c.shape)[0] as [string, any];
+      return { node: nodeName(g, c.node), kind, r: v.radius, pts: [v.offset, v.tail].filter(Boolean).map((p: number[]) => at(w(c.node), p)) };
+    };
+    const colB = sprB.colliders.map((c: any) => shape(B, wb, c));
+    let worst = 0, colOk = 0;
+    for (const c of sprA.colliders.map((x: any) => shape(A, wa, x))) {
+      const o = colB.find((x: any) => x.node === c.node && x.kind === c.kind);
+      if (!o) { fails.push(`collider ${c.kind} on ${c.node} missing`); continue; }
+      const d = Math.max(Math.abs(c.r - o.r), ...c.pts.map((p: number[], k: number) => Math.hypot(...p.map((x, e) => x - o.pts[k]![e]!))));
+      worst = Math.max(worst, d);
+      if (d > 1e-4) fails.push(`collider ${c.kind} on ${c.node} off by ${(d * 1000).toFixed(3)} mm`);
+      else colOk++;
+    }
+    if (sprB.colliders.length !== sprA.colliders.length) fails.push(`colliders ${sprA.colliders.length} vs ${sprB.colliders.length}`);
+    lines.push(`spring bones ${springOk}/${sprA.springs.length} springs same; colliders ${colOk}/${sprA.colliders.length} within 0.1 mm (worst ${(worst * 1000).toFixed(3)} mm)`);
+  }
+}
 
 // --- materials and texture pixels -------------------------------------------------------------------------
 async function texPixels(g: Glb, info: any): Promise<Pixels | null> {
@@ -288,7 +353,7 @@ lines.push(`size ${(sa / 1e6).toFixed(1)} MB vs ${(sb / 1e6).toFixed(1)} MB`);
 if (sb > sa * 1.15) fails.push('candidate more than 15 % larger');
 
 // --- geometry through the contract comparison ----------------------------------------------------------
-const contracts = { ref: toContract(A, 'ref'), new: toContract(B, 'new') };
+const contracts = { ref: toContract(geometryRef ? readGlb(geometryRef) : A, 'ref'), new: toContract(B, 'new') };
 for (const [p, tag] of [[refPath, 'ref'], [newPath, 'new']] as const) {
   const { json, bin } = writeContract(contracts[tag]);
   writeFileSync(`${p}.${tag}.json`, json);
@@ -363,7 +428,7 @@ function onOriginal(m: Mesh, o: Mesh): { on: number; ok: boolean; worst: string 
 let geometry = '';
 let geometryOk = true;
 try {
-  geometry = execFileSync('node', ['tools/compare/contract.mjs', `${refPath}.ref`, `${newPath}.new`, '--exact', ...(reduced.length ? ['--decimated', JSON.stringify(reduced)] : []), ...(morphMm ? ['--morph-mm', morphMm] : [])], { encoding: 'utf8' });
+  geometry = execFileSync('node', ['tools/compare/contract.mjs', `${refPath}.ref`, `${newPath}.new`, ...(geometryRef ? [] : ['--exact']), ...(reduced.length ? ['--decimated', JSON.stringify(reduced)] : []), ...(morphMm ? ['--morph-mm', morphMm] : [])], { encoding: 'utf8' });
 } catch (e: any) {
   geometry = e.stdout ?? String(e);
   geometryOk = false;
