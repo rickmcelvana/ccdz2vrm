@@ -161,7 +161,9 @@ export async function cleanImport(raw: Contract, codec: ImageCodec): Promise<{ c
       parent = twinBase(parent);
       report.reparented_off_twins++;
     }
-    return { name, parent, armature: figure, matrix: n.matrix };
+    // Blender keeps the file's saved pose on the bones (common.apply_pose_as_rest later bakes it)
+    const posed = n.pose && n.pose.some((x, k) => Math.abs(x - n.matrix[k]!) > 1e-6) ? { pose: n.pose } : {};
+    return { name, parent, armature: figure, matrix: n.matrix, ...posed };
   });
 
   // A raw bone index as Blender names its vertex group: the bone's name, or the node's own

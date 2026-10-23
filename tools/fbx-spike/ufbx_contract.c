@@ -392,6 +392,9 @@ EXPORT("ccdz_load") int ccdz_load(const void *data, size_t size) {
 		js("\"");
 		{ char t[16]; snprintf(t, sizeof t, "%d", is_bone[i] ? (int)bone_of_node[i] : -1); js(",\"bone\":"); js(t); }
 		js(",\"matrix\":"); jmat(have[i] ? rest[i] : n->node_to_world);
+		// the pose the file was saved in (Daz heels: toes bent off the bind pose); Blender's
+		// importer leaves it on the bones and the adapters' A -> T bake keeps it
+		js(",\"pose\":"); jmat(n->node_to_world);
 		js("}");
 	}
 	js("],\"meshes\":[");

@@ -29,6 +29,7 @@ function chains(side: 'left' | 'right'): Chain[] {
 /** humanBones: VRM name -> bone index. Returns the bones it turned and by how much (degrees). */
 export function vrmTPose(pose: Pose, humanBones: Record<string, { node: number }>, meshes: Mesh[]): Record<string, number> {
   const turned: Record<string, number> = {};
+  pose.reset(); // set_estimated_humanoid_t_pose clears every pose bone first (a file's saved pose too)
   const parentOf = pose.bones.map((b) => (b.parent === null ? -1 : (pose.index.get(b.parent) ?? -1)));
   const turn = (i: number, from: Vec3, to: Vec3) => {
     if (Math.hypot(...from) < 1e-12 || Math.hypot(...to) < 1e-12) return;

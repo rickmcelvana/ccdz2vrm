@@ -81,7 +81,8 @@ export class Pose {
   constructor(bones: Bone[]) {
     this.bones = bones;
     this.rest = bones.map((b) => new Float64Array(b.matrix));
-    this.world = this.rest.map((m) => new Float64Array(m));
+    // starts in the file's saved pose where there is one, as Blender's pose does after import
+    this.world = bones.map((b, i) => new Float64Array(b.pose ?? this.rest[i]!));
     this.index = new Map(bones.map((b, i) => [b.name, i]));
     this.children = bones.map(() => []);
     bones.forEach((b, i) => {
@@ -186,45 +187,103 @@ export function deformMesh(
   return { position, normal, deltas: out };
 }
 
-/** Area-weighted vertex normals of the surface, per source vertex (`vertex`), spread to splits. */
-function surfaceNormals(m: Mesh, pos: Float32Array): Float64Array {
-  const id = (v: number) => (m.vertex ? m.vertex[v]! : v);
-  const acc = new Map<number, [number, number, number]>();
+/**
+ * Normals after a pose is baked. Blender keeps FBX custom normals in a per-corner space built
+ * from the vertex's angle-weighted surface normal and an edge (its "lnor space"), so they
+ * follow the deformed surface, twist included; blending them with the bone matrices was 6 deg
+ * off at the shoulders after the A -> T pose (ENVIRONMENT.md s33). Here each source vertex gets
+ * that frame -- angle-weighted normal + its first edge -- at rest and posed, and its normals
+ * are carried from one frame to the other.
+ */
+function transportNormals(m: Mesh, rest: Float32Array, posed: Float32Array, skinned: Float32Array | undefined): Float32Array | undefined {
+  if (!m.normal) return undefined;
+  const weight = new Map<number, number>(); // sum of corner angles: |normal sum| / this = how coherent
+  // Blender's spaces are per smooth fan (the corners of a vertex between hard edges); corners in
+  // one fan share their custom normal, so source vertex + normal value stands in for the fan
+  const nrm = m.normal;
+  const fans = new Map<string, number>();
+  const fanOf = new Int32Array(m.vertex_count);
+  for (let v = 0; v < m.vertex_count; v++) {
+    const k = `${m.vertex ? m.vertex[v]! : v}:${nrm[v * 3]},${nrm[v * 3 + 1]},${nrm[v * 3 + 2]}`;
+    if (!fans.has(k)) fans.set(k, fans.size);
+    fanOf[v] = fans.get(k)!;
+  }
+  const id = (v: number) => fanOf[v]!;
+  const nRest = new Map<number, Vec3>(), nPosed = new Map<number, Vec3>(), ref = new Map<number, [number, number]>();
+  const add = (map: Map<number, Vec3>, k: number, x: number, y: number, z: number, w: number) => {
+    const s = map.get(k) ?? [0, 0, 0];
+    map.set(k, [s[0] + x * w, s[1] + y * w, s[2] + z * w]);
+  };
   for (let t = 0; t < m.triangle_count; t++) {
-    const [a, b, c] = [m.indices[t * 3]!, m.indices[t * 3 + 1]!, m.indices[t * 3 + 2]!];
-    const ux = pos[b * 3]! - pos[a * 3]!, uy = pos[b * 3 + 1]! - pos[a * 3 + 1]!, uz = pos[b * 3 + 2]! - pos[a * 3 + 2]!;
-    const vx = pos[c * 3]! - pos[a * 3]!, vy = pos[c * 3 + 1]! - pos[a * 3 + 1]!, vz = pos[c * 3 + 2]! - pos[a * 3 + 2]!;
-    const n: [number, number, number] = [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
-    for (const v of [a, b, c]) {
-      const s = acc.get(id(v)) ?? [0, 0, 0];
-      acc.set(id(v), [s[0] + n[0], s[1] + n[1], s[2] + n[2]]);
+    const c = [m.indices[t * 3]!, m.indices[t * 3 + 1]!, m.indices[t * 3 + 2]!];
+    for (const [pos, map] of [[rest, nRest], [posed, nPosed]] as const) {
+      const p = c.map((v) => [pos[v * 3]!, pos[v * 3 + 1]!, pos[v * 3 + 2]!]);
+      const e1 = [0, 1, 2].map((r) => p[1]![r]! - p[0]![r]!), e2 = [0, 1, 2].map((r) => p[2]![r]! - p[0]![r]!);
+      const fn = [e1[1]! * e2[2]! - e1[2]! * e2[1]!, e1[2]! * e2[0]! - e1[0]! * e2[2]!, e1[0]! * e2[1]! - e1[1]! * e2[0]!];
+      const fl = Math.hypot(...fn);
+      if (fl < 1e-30) continue;
+      for (let k = 0; k < 3; k++) {
+        const a = p[(k + 1) % 3]!.map((x, r) => x - p[k]![r]!), b = p[(k + 2) % 3]!.map((x, r) => x - p[k]![r]!);
+        const ang = Math.acos(Math.max(-1, Math.min(1, (a[0]! * b[0]! + a[1]! * b[1]! + a[2]! * b[2]!) / ((Math.hypot(...a) * Math.hypot(...b)) || 1))));
+        add(map, id(c[k]!), fn[0]! / fl, fn[1]! / fl, fn[2]! / fl, ang);
+        if (map === nRest) weight.set(id(c[k]!), (weight.get(id(c[k]!)) ?? 0) + ang);
+      }
     }
   }
-  const out = new Float64Array(m.vertex_count * 3);
-  for (let v = 0; v < m.vertex_count; v++) out.set(acc.get(id(v)) ?? [0, 0, 0], v * 3);
-  return out;
-}
-
-/**
- * Normals after a pose is baked. Blender keeps FBX custom normals relative to each face
- * corner, so they follow the deformed surface; blending them with the bone matrices instead
- * was 6 deg off at the shoulders after the A -> T pose (ENVIRONMENT.md s33). Each normal is
- * turned by the rotation that takes the surface normal at its vertex from rest to posed.
- */
-function transportNormals(m: Mesh, rest: Float32Array, posed: Float32Array): Float32Array | undefined {
-  if (!m.normal) return undefined;
-  const a = surfaceNormals(m, rest), b = surfaceNormals(m, posed);
+  // each vertex's reference edge: the one most perpendicular to its rest normal (an edge nearly
+  // along the normal leaves the frame's twist to float-rounding noise)
+  const best = new Map<number, number>();
+  for (let t = 0; t < m.triangle_count; t++)
+    for (let k = 0; k < 3; k++) {
+      const a = m.indices[t * 3 + k]!, b = m.indices[t * 3 + ((k + 1) % 3)]!, n = nRest.get(id(a));
+      if (!n) continue;
+      const e = [0, 1, 2].map((r) => rest[b * 3 + r]! - rest[a * 3 + r]!), el = Math.hypot(...e), nl = Math.hypot(...n);
+      if (el < 1e-12 || nl < 1e-20) continue;
+      const along = Math.abs(e[0]! * n[0] + e[1]! * n[1] + e[2]! * n[2]) / (el * nl);
+      if (along < (best.get(id(a)) ?? Infinity)) {
+        best.set(id(a), along);
+        ref.set(id(a), [a, b]);
+      }
+    }
+  // an orthonormal frame (tangent, bitangent, normal) from a normal and an edge
+  const frame = (n: Vec3, from: number, to: number, pos: Float32Array): number[] | null => {
+    const nl = Math.hypot(...n);
+    if (nl < 1e-20) return null;
+    const N = n.map((x) => x / nl);
+    const e = [0, 1, 2].map((r) => pos[to * 3 + r]! - pos[from * 3 + r]!);
+    const d = e[0]! * N[0]! + e[1]! * N[1]! + e[2]! * N[2]!;
+    const T = e.map((x, r) => x - d * N[r]!), tl = Math.hypot(...T);
+    if (tl < 1e-20) return null;
+    T.forEach((x, r) => (T[r] = x / tl));
+    const B = [N[1]! * T[2]! - N[2]! * T[1]!, N[2]! * T[0]! - N[0]! * T[2]!, N[0]! * T[1]! - N[1]! * T[0]!];
+    return [...T, ...B, ...N];
+  };
   const out = new Float32Array(m.normal);
+  const R = new Map<number, number[] | null>();
   for (let v = 0; v < m.vertex_count; v++) {
-    const from: Vec3 = [a[v * 3]!, a[v * 3 + 1]!, a[v * 3 + 2]!], to: Vec3 = [b[v * 3]!, b[v * 3 + 1]!, b[v * 3 + 2]!];
-    if (Math.hypot(...from) < 1e-20 || Math.hypot(...to) < 1e-20) continue;
-    const { axis, angle } = rotationDifference(from, to);
-    if (angle < 1e-9) continue;
-    const R = rotationAbout(axis, angle, [0, 0, 0]);
+    const k = id(v);
+    // a vertex the pose did not move keeps its normal (frames rebuilt from float32 positions
+    // would add a few hundredths of a degree of noise)
+    if (posed[v * 3] === rest[v * 3] && posed[v * 3 + 1] === rest[v * 3 + 1] && posed[v * 3 + 2] === rest[v * 3 + 2]) continue;
+    // where the faces around a vertex point opposite ways (a two-layer cloth sharing its
+    // vertices) the summed normal is no frame at all: blend with the bones instead
+    const nr = nRest.get(k);
+    if (!nr || Math.hypot(...nr) < 0.5 * (weight.get(k) ?? 0)) {
+      if (skinned) out.set(skinned.subarray(v * 3, v * 3 + 3), v * 3);
+      continue;
+    }
+    if (!R.has(k)) {
+      const r = ref.get(k);
+      const f0 = r && nRest.get(k) ? frame(nRest.get(k)!, r[0], r[1], rest) : null;
+      const f1 = r && nPosed.get(k) ? frame(nPosed.get(k)!, r[0], r[1], posed) : null;
+      R.set(k, f0 && f1 ? [f0, f1].flat() : null);
+    }
+    const f = R.get(k);
+    if (!f) continue;
     const nx = m.normal[v * 3]!, ny = m.normal[v * 3 + 1]!, nz = m.normal[v * 3 + 2]!;
-    out[v * 3] = R[0]! * nx + R[4]! * ny + R[8]! * nz;
-    out[v * 3 + 1] = R[1]! * nx + R[5]! * ny + R[9]! * nz;
-    out[v * 3 + 2] = R[2]! * nx + R[6]! * ny + R[10]! * nz;
+    // coordinates in the rest frame, rebuilt in the posed frame
+    const ct = nx * f[0]! + ny * f[1]! + nz * f[2]!, cb = nx * f[3]! + ny * f[4]! + nz * f[5]!, cn = nx * f[6]! + ny * f[7]! + nz * f[8]!;
+    for (let r = 0; r < 3; r++) out[v * 3 + r] = ct * f[9 + r]! + cb * f[12 + r]! + cn * f[15 + r]!;
   }
   return out;
 }
@@ -239,10 +298,13 @@ export function applyPoseAsRest(pose: Pose, meshes: Mesh[], normals: 'surface' |
   const S = pose.skinning();
   for (const m of meshes) {
     const r = deformMesh(m, S, m.morphs.map((k) => k.delta));
-    m.normal = normals === 'surface' ? transportNormals(m, m.position, r.position) : r.normal;
+    m.normal = normals === 'surface' ? transportNormals(m, m.position, r.position, r.normal) : r.normal;
     m.position = r.position;
     m.morphs.forEach((k, q) => (k.delta = r.deltas[q]!));
   }
-  pose.bones.forEach((b, i) => (b.matrix = Array.from(pose.world[i]!)));
+  pose.bones.forEach((b, i) => {
+    b.matrix = Array.from(pose.world[i]!);
+    delete b.pose; // baked
+  });
   pose.rest.forEach((_, i) => (pose.rest[i] = new Float64Array(pose.world[i]!)));
 }

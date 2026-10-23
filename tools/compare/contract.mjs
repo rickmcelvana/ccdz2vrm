@@ -254,6 +254,9 @@ for (const m of A.doc.materials) {
   pbrChecked++;
   for (const [k, va] of Object.entries(m.pbr)) {
     const vb = pb[k];
+    // a reference normal made from a height map after a .blend reload names its source instead
+    // of hashing it (dump_contract.py generated_normal); the flag beside it is still compared
+    if (k === 'normal_tex' && typeof va === 'string' && va.startsWith('height:') && m.pbr.normal_from_height && pb.normal_from_height) continue;
     const same = Array.isArray(va) ? va.every((x, q) => Math.abs(x - vb?.[q]) < 1e-5)
       : typeof va === 'number' ? Math.abs(va - vb) < 1e-5 : va === vb;
     if (!same) pbrOff.push(`${m.name}.${k}: ${JSON.stringify(va)} vs ${JSON.stringify(vb)}`);

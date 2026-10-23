@@ -2,8 +2,9 @@
 // A port of src/blender/adapt_cc.py, step for step; judged against its .blend dumped by
 // dump_contract.py (tools/port/run_adapt.sh). Step numbers are adapt_cc.py's.
 
-import { MAXW, type Contract, type Mesh, type Morph } from './contract.ts';
-import { applyPoseAsRest, deformMesh, Pose, rotationAbout, type Vec3 } from './pose.ts';
+import { MAXW, type Contract, type Mesh } from './contract.ts';
+import { deformMesh, Pose, rotationAbout, type Vec3 } from './pose.ts';
+import { dropTriangles, mixKey, round1, tposeArms } from './adaptCommon.ts';
 import type { ImageCodec } from './images.ts';
 
 export type CcReport = {
@@ -56,59 +57,6 @@ export function arkitName(n: string): string | null {
   return parts[0]!.toLowerCase() + parts.slice(1).map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join('');
 }
 
-/** Python round(x, 1): half to even on the binary value. */
-const round1 = (x: number) => {
-  const y = x * 10, f = Math.floor(y), d = y - f;
-  const r = d > 0.5 || (d === 0.5 && f % 2 !== 0) ? f + 1 : f;
-  return r / 10;
-};
-
-/** A new key from a mix of existing ones (Blender shape_key_add from_mix). */
-function mixKey(m: Mesh, name: string, mix: Record<string, number>): Morph {
-  const d = new Float32Array(m.vertex_count * 3);
-  for (const [k, w] of Object.entries(mix)) {
-    const src = m.morphs.find((x) => x.name === k)!.delta;
-    for (let i = 0; i < d.length; i++) d[i] = d[i]! + w * src[i]!;
-  }
-  return { name, shape: name, inbetweens: 0, delta: d };
-}
-
-/** Delete triangles, then the split vertices nothing uses any more (bmesh delete FACES). */
-function dropTriangles(m: Mesh, dead: (t: number) => boolean): number {
-  const keepTri: number[] = [];
-  for (let t = 0; t < m.triangle_count; t++) if (!dead(t)) keepTri.push(t);
-  const removed = m.triangle_count - keepTri.length;
-  if (!removed) return 0;
-  const used = new Int32Array(m.vertex_count).fill(-1);
-  let n = 0;
-  for (const t of keepTri) for (let c = 0; c < 3; c++) {
-    const v = m.indices[t * 3 + c]!;
-    if (used[v] === -1) used[v] = n++;
-  }
-  const pick = <T extends Float32Array | Uint16Array | Uint32Array>(a: T, k: number): T => {
-    const o = new (a.constructor as new (n: number) => T)(n * k);
-    for (let v = 0; v < m.vertex_count; v++) if (used[v]! >= 0) o.set(a.subarray(v * k, v * k + k), used[v]! * k);
-    return o;
-  };
-  m.position = pick(m.position, 3);
-  m.uv = pick(m.uv, 2);
-  if (m.normal) m.normal = pick(m.normal, 3);
-  if (m.vertex) m.vertex = pick(m.vertex, 1);
-  m.joints = pick(m.joints, MAXW);
-  m.weights = pick(m.weights, MAXW);
-  m.morphs = m.morphs.map((k) => ({ ...k, delta: pick(k.delta, 3) }));
-  const idx = new Uint32Array(keepTri.length * 3), tm = new Uint16Array(keepTri.length);
-  keepTri.forEach((t, i) => {
-    for (let c = 0; c < 3; c++) idx[i * 3 + c] = used[m.indices[t * 3 + c]!]!;
-    tm[i] = m.triangle_material[t]!;
-  });
-  m.indices = idx;
-  m.triangle_material = tm;
-  m.vertex_count = n;
-  m.triangle_count = keepTri.length;
-  return removed;
-}
-
 export async function adaptCc(clean: Contract, name: string, codec: ImageCodec): Promise<{ contract: Contract; report: CcReport }> {
   const report: CcReport = { cornea_triangles_removed: 0, opacity_rewired: [], arm_drop_deg: {}, arkit_renamed: 0, arkit_from_legacy: 0, jaw_baked: {} };
   // deep enough a copy that the input stays as it was
@@ -159,22 +107,10 @@ export async function adaptCc(clean: Contract, name: string, codec: ImageCodec):
 
   // --- 3. T-pose ---------------------------------------------------------------------------------------
   const pose = new Pose(bones);
-  const chains: [string, string, string, number][] = [
+  report.arm_drop_deg = tposeArms(pose, meshes, [
     ['CC_Base_L_Upperarm', 'CC_Base_L_Forearm', 'CC_Base_L_Hand', 1],
     ['CC_Base_R_Upperarm', 'CC_Base_R_Forearm', 'CC_Base_R_Hand', -1],
-  ];
-  for (const [up, , hand] of chains) {
-    const a = pose.head(pose.bone(up)), h = pose.head(pose.bone(hand));
-    // Blender: atan2(-v.z, |v.x|) with Z up; here Y is up
-    report.arm_drop_deg[up] = round1((Math.atan2(-(h[1] - a[1]), Math.abs(h[0] - a[0])) * 180) / Math.PI);
-  }
-  if (Math.max(...Object.values(report.arm_drop_deg).map(Math.abs)) > 3) {
-    for (const [up, low, hand, sign] of chains) {
-      pose.aim(pose.bone(up), pose.bone(low), [sign, 0, 0]);
-      pose.aim(pose.bone(low), pose.bone(hand), [sign, 0, 0]);
-    }
-    applyPoseAsRest(pose, meshes);
-  }
+  ]);
 
   // --- 4. rename ARKit keys --------------------------------------------------------------------------
   for (const m of meshes) {

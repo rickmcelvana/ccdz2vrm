@@ -849,3 +849,60 @@ visible effect is a slightly flatter face highlight, side-by-side render checked
 vertex-colour sets; morph targets without normals; unchanged source images embedded as they are
 (PNG colour-space chunks stripped, which the validator flags), re-encoded ones JPEG unless they
 need alpha, normal maps PNG.
+
+## 34. Browser port, Phase 4: the Daz adapter in TypeScript, and the whole chain on 5 exports [V] — 2026-10-23
+
+`app/src/convert/adaptDaz.ts` ports `adapt_daz.py`: overlays, FACS mix + noise drop + side
+check (Genesis 8.1 with FACS morphs), the bone-posed face (pose the face bones per expression,
+freeze), the A → T pose. Shared pieces moved to `adaptCommon.ts`. References built by
+`tools/port/make_refs.sh daz ...`.
+
+**Adapter vs Blender's adapter** (`run_adapt.sh`, exact names): all five pass.
+
+| Export | Face | Bones | Vertices | Keys |
+|---|---|---|---|---|
+| Alice G8.1 | FACS morphs | ≤ 0.001 mm | ≤ 0.001 mm | 140 (56 body, 27 lash, 57 tear) all within 0.1 mm |
+| Alice_gen8_02 G8 | bone-posed | ≤ 0.001 mm (heel pose included) | ≤ 0.001 mm | 35 frozen keys |
+| Genesis 3 | bone-posed | exact | exact | 29 frozen keys |
+| Ira, ALICE-00001a (CC) | ARKit | ≤ 0.041 mm | ≤ 0.036 mm | as §32 |
+
+**Whole chain, VRM vs Blender's VRM** (`run_finish.sh`): Ira, ALICE-00001a, Alice G8.1 and
+Genesis 3 pass; Alice_gen8_02 passes everything except normals on one mesh (below). All five:
+54 humanoid bones and 70 expressions identical, every material the same, Khronos validator 0
+errors, three-vrm ok.
+
+| | Ira | ALICE-00001a | Alice G8.1 | G8 | G3 |
+|---|---|---|---|---|---|
+| Size (Blender → ours) | 49.2 → 35.3 MB | 41.6 → 28.2 | 18.5 → 19.0 | 54.1 → 59.2 | 32.4 → 34.4 |
+| Worst texture mean diff /255 | 1.2 | 1.2 | 1.5 | 3.9 | 5.1 |
+| Chain time in Node (finisher) | 9 s (7.7) | 8 s (6.8) | 15 s (14) | 67 s (58) | 30 s (26) |
+
+(The finisher's time is nearly all pure-JS decoding and resizing of 4K maps; the browser build
+decodes with `createImageBitmap`.)
+
+Found on the way, each measured:
+- **A file's saved pose is part of the result.** Alice_gen8_02 wears heels: Daz saves the feet
+  in a heel pose (toes bent up to 107 mm off the flat bind pose). Blender's importer leaves that
+  pose on the bones, and the adapters' A → T bake (`apply_pose_as_rest`) applies the *whole*
+  current pose, so the feet come out shaped to the shoes. The shim now exports each node's file
+  pose, the T-pose starts from it and measures arm drop on the rest pose, and — like Blender —
+  it is only baked when an A → T bake happens (G3, already in T, keeps its bind pose; the export
+  T-pose resets to rest first, as the add-on does).
+- **Normals after a bake follow Blender's corner spaces.** Transporting each normal by the
+  minimal rotation of its vertex's normal ignored twist about the normal; on G8's clothes that
+  was 6–20° off. Now: a frame per vertex from its angle-weighted normal and its most
+  perpendicular edge, rest → posed; unmoved vertices untouched; where faces around a vertex
+  point opposite ways (two-layer cloth) the bone-blended normal. Alice body 4.9° → 0.7°, Ira
+  body 2.3° → 0.7°, G8 body 6.5° → 2.1° (p99). **Residual:** G8's top ("RRTop") stays at p99
+  8.4°: 92 of its 10,903 vertices, all at the armpits, where Blender scales each normal's angle
+  with its fan's angular span under stretch — not reproducible with a rigid frame. Side-by-side
+  renders are indistinguishable; the comparison keeps its 5° limit and reports it.
+- **A faceless mesh is not exported.** Daz's tear film loses all its triangles to the overlay
+  removal but keeps 57 keys; Blender's exporter drops it, so does ours now.
+- **Texture tolerance** was set tighter than Blender's own encoding: its JPEG re-encode alone
+  differs ~2.5/255 from a lossless resize, and on a noisy 4000 px bump map taken to 1024 (a
+  non-integer factor) Blender's scale filter and our box filter differ by 4.7
+  (`tools/port/texdiff.ts`). Limit now 6/255 mean. Resized maps keep their source format (a JPEG
+  bump re-encoded as PNG had made G3's VRM 16 % bigger than Blender's).
+- `dump_contract.py` now recognises height-made normal maps by their own marks (packed, no
+  file): after a .blend save the source height images are purged (no users left).

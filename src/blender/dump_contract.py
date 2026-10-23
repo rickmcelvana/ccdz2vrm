@@ -156,6 +156,10 @@ def image_bytes(img):
     return open(path, "rb").read() if os.path.isfile(path) else b""
 
 
+def generated_normal(img):
+    return img.name.endswith("_normal") and bool(img.packed_file) and not img.filepath
+
+
 def pbr(mat):
     """The Principled BSDF as the finisher reads it."""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -172,9 +176,10 @@ def pbr(mat):
     alink = next((l for l in a.links if l.from_node.type == "TEX_IMAGE"), None)
     nm = next((l.from_node for l in b.inputs["Normal"].links if l.from_node.type == "NORMAL_MAP"), None)
     ntex = next((l.from_node for l in nm.inputs["Color"].links if l.from_node.type == "TEX_IMAGE"), None) if nm else None
-    from_height = bool(ntex and ntex.image and ntex.image.name.endswith("_normal")
-                       and ntex.image.name[:-7] in bpy.data.images)
-    src = bpy.data.images[ntex.image.name[:-7]] if from_height else (ntex.image if ntex else None)
+    # made by common.height_to_normal: packed, no file, `<source>_normal`. After a save and
+    # reload the source height image is gone (it had no users left), so it is named, not hashed.
+    from_height = bool(ntex and ntex.image and generated_normal(ntex.image))
+    src = None if from_height else (ntex.image if ntex else None)
     return {
         "base_color": list(b.inputs["Base Color"].default_value)[:3],
         "base_tex": img_fnv(upstream_image(b.inputs["Base Color"])),
@@ -185,7 +190,7 @@ def pbr(mat):
         "roughness_tex": img_fnv(upstream_image(b.inputs["Roughness"])),
         "metallic": b.inputs["Metallic"].default_value,
         "metallic_tex": img_fnv(upstream_image(b.inputs["Metallic"])),
-        "normal_tex": fnv(image_bytes(src)) if src else None,
+        "normal_tex": (f"height:{ntex.image.name[:-7]}" if from_height else fnv(image_bytes(src)) if src else None),
         "normal_from_height": from_height,
         "normal_strength": nm.inputs["Strength"].default_value if nm else None,
     }
@@ -209,7 +214,7 @@ for img in bpy.data.images:
         continue
     data = image_bytes(img)
     # made by common.height_to_normal, not read from the FBX: compared as pixels, not bytes
-    generated = img.name.endswith("_normal") and img.name[:-7] in bpy.data.images
+    generated = generated_normal(img)
     images.append({"name": os.path.basename(img.filepath) or img.name, "bytes": len(data), "fnv": fnv(data),
                    "generated": generated})
 

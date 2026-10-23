@@ -237,7 +237,10 @@ for (const ma of A.json.materials) {
   else matOk++;
 }
 lines.push(`materials ${matOk}/${A.json.materials.length} same; texture pixels worst mean |diff| rgb ${worstRgb.toFixed(2)} alpha ${worstAlpha.toFixed(2)} (of 255; ${worstName})`);
-if (worstRgb > 3 || worstAlpha > 3) fails.push(`texture pixels differ by up to ${worstRgb.toFixed(2)} / ${worstAlpha.toFixed(2)}`);
+// 6/255 mean: Blender's own JPEG re-encode alone differs ~2.5 from a lossless resize, and on a
+// noisy 4000 px bump map taken to 1024 (a non-integer factor) its scale filter and our box
+// filter differ by 4.7 before any encoding (tools/port/texdiff.ts, ENVIRONMENT.md s34)
+if (worstRgb > 6 || worstAlpha > 6) fails.push(`texture pixels differ by up to ${worstRgb.toFixed(2)} / ${worstAlpha.toFixed(2)}`);
 
 const sa = readFileSync(refPath).byteLength, sb = readFileSync(newPath).byteLength;
 lines.push(`size ${(sa / 1e6).toFixed(1)} MB vs ${(sb / 1e6).toFixed(1)} MB`);

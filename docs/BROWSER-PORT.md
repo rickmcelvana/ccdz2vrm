@@ -145,7 +145,10 @@ ENVIRONMENT.md section for anything measured.
    VRMC_vrm references nodes and meshes by index, simpler to own. Original plan:
    **Finisher and VRM writer**: humanoid, expressions, prune, lookAt, first person, ≤4 weights,
    materials and soft strands, texture budget. Level 2 + 3 on the CC exports (Desktop tier).
-4. **Daz adapter**: family check, overlays, FACS mix, bone-posed face, T-pose, noise drop.
+4. ✅ **Daz adapter** (2026-10-23, ENVIRONMENT §34): `adaptDaz.ts` equals Blender's on Alice G8.1
+   (FACS), G8 and G3 (bone-posed); the whole chain matches Blender's VRMs on all five exports
+   except one documented normal residual (G8's top at the armpits). Original plan:
+   **Daz adapter**: family check, overlays, FACS mix, bone-posed face, T-pose, noise drop.
    Level 1–3 on Alice, G8, G3.
 5. **Web tier**: `glb_web` port, hair-card reduction (meshoptimizer first, rung-dissolve port if
    it spikes), keyed decimation. Level 2 sizes + Level 3 visuals on every file.

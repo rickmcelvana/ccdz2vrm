@@ -10,7 +10,7 @@
 //  - morph targets carry no normals (three-vrm lights expressions with the base normals,
 //    as the web tier already did);
 //  - unchanged source images are embedded as they are; re-encoded ones are JPEG unless they
-//    need alpha (PNG); normal maps PNG.
+//    need alpha (PNG); normal maps keep their source's format (generated ones PNG).
 
 import { MAXW, type Contract, type Material, type Mesh, type Pbr } from './contract.ts';
 import { GlbBuilder, type Json } from './glb.ts';
@@ -73,8 +73,11 @@ export async function finish(adapted: Contract, codec: ImageCodec, opts: FinishO
 
   // --- 6 (early). skin weights: <= 4 influences, normalised. Blender limits them before it
   // exports, and the export poses the figure (below) with these weights.
-  const skin = adapted.meshes.map((m) => limitWeights(m));
-  const meshes: Mesh[] = adapted.meshes.map((m, mi) => {
+  // a mesh with no faces left (Daz's tear film once its overlay triangles are gone) is not
+  // exported: Blender's glTF exporter skips it, with its keys and expression binds
+  const solid = adapted.meshes.filter((m) => m.triangle_count > 0);
+  const skin = solid.map((m) => limitWeights(m));
+  const meshes: Mesh[] = solid.map((m, mi) => {
     const joints = new Uint16Array(m.vertex_count * MAXW), weights = new Float32Array(m.vertex_count * MAXW);
     for (let v = 0; v < m.vertex_count; v++)
       for (let k = 0; k < 4; k++) {
@@ -319,7 +322,9 @@ class TextureCache {
     if (!max || Math.max(px.width, px.height) <= max) {
       tex = this.add(stripPng(raw), mimeOf(raw) ?? 'image/png', name);
     } else {
-      tex = await this.encode(this.budget(px), name, needAlpha || normal);
+      // a resized map keeps its source's format: a JPEG bump stays JPEG (it was lossy already;
+      // as PNG it made g3's VRM 16 % bigger than Blender's), PNG and alpha stay PNG
+      tex = await this.encode(this.budget(px), name, needAlpha || (normal && mimeOf(raw) !== 'image/jpeg'));
     }
     this.written.set(key, tex);
     return tex;

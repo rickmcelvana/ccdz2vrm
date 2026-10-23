@@ -17,6 +17,8 @@ export type Bone = {
   rest_from?: string;
   /** World rest matrix, column-major 4x4. */
   matrix: number[];
+  /** World matrix in the pose the file was saved in, when it differs from rest (cleanup.ts). */
+  pose?: number[];
 };
 
 /** Raw import only: every FBX node, for Blender's bone/armature rule (cleanup.ts step 0). */
@@ -30,6 +32,8 @@ export type RawNode = {
   /** Index into the raw `bones` when the node is a limb or a skin cluster's target, else -1. */
   bone: number;
   matrix: number[];
+  /** World matrix in the file's saved pose. */
+  pose?: number[];
 };
 
 export type Morph = { name: string; shape: string; inbetweens: number; delta: Float32Array };
