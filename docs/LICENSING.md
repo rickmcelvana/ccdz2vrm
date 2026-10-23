@@ -4,6 +4,14 @@ The converter turns *your* Daz 3D / Character Creator character into a VRM, on y
 machine. Two separate licence questions follow from that: what the **tools** it uses allow,
 and what the **content** you feed it allows.
 
+## This repo
+
+**GPL-3.0-or-later** (`LICENSE`, the text Blender ships in `license/spdx/`), chosen 2026-10-23.
+It matches Blender: the scripts in `src/blender/` and `scripts/` use Blender's Python API, which
+the Blender Foundation holds to be covered by Blender's GPL-2.0-or-later when distributed, and
+GPL-2.0-or-later code may be distributed under GPL-3.0-or-later. Every component below is
+GPLv3-compatible (MIT, BSD, Apache-2.0, Unlicense, IJG/zlib).
+
 ## Tools
 
 | Component | Licence | Role |
@@ -28,8 +36,7 @@ builds above, so the static site (`dist/`) carries none. The desktop app's refer
 the user's own Blender as a separate program, the way the CLI does, on the scripts in
 `src/blender/`, which import `bpy`. The Blender Foundation's position is that scripts using its
 Python API are covered by Blender's GPL when distributed, and the app's installer carries them
-(as `pipeline/`); pick this repo's licence with that in mind (see the open question in
-`CLAUDE.md`) -- or ship the app without the reference mode.
+(as `pipeline/`) -- which the repo's GPL-3.0-or-later licence covers.
 
 Audit before adding a component: is the *weights/data* licence separate from the *code* licence?
 Does it trace to SMPL / SMPL-X / MANO / FLAME? (reject). Add it to the table above **in the same

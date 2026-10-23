@@ -30,6 +30,7 @@
     "active": true,
     "targets": ["nsis"],
     "publisher": "latentPresence",
+    "license": "GPL-3.0-or-later",
     "homepage": "https://latentpresence.com",
     "category": "GraphicsAndDesign",
     "shortDescription": "Turn Daz 3D and Character Creator characters into VRM avatars",

@@ -1,7 +1,8 @@
 [package]
 name = "ccdz2vrm"
 version = "0.1.0"
-description = "Daz 3D / Character Creator FBX to VRM 1.0, driving the user's own Blender"
+license = "GPL-3.0-or-later"
+description = "Daz 3D / Character Creator FBX to VRM 1.0: built-in converter, the user's Blender as reference"
 edition = "2024"
 
 [lib]

@@ -195,6 +195,10 @@ still passes every validator, which is why the probe reports `images.missing`.
 
 ### Licence
 
+The code is **GPL-3.0-or-later** ([LICENSE](LICENSE)), compatible with Blender's
+GPL-2.0-or-later, whose Python API the reference pipeline uses. Third-party components and their
+licences: [docs/LICENSING.md](docs/LICENSING.md).
+
 Daz and CC *content* is your own licence, and the adapters may process it locally, but **no Daz or
 CC asset ever ships** and nothing here is redistributed. `imports/` and every `.vrm` / `.glb` /
 `.fbx` are gitignored — keep source exports in `imports/`.
