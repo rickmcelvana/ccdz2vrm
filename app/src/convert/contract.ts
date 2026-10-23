@@ -5,7 +5,12 @@
 // Frame: glTF (Y up, +Z front, metres), bind pose. Vertices are split per (position, uv)
 // like a glTF export. Skin: 8 joints + 8 weights per vertex, joints index `bones`.
 
-export const MAXW = 8;
+/**
+ * Skin influences per vertex. Daz clothing carries up to 11 (a Bardot top), and Blender's pose
+ * bake uses every one, so 8 moved 530 of its vertices by up to 0.56 mm (ENVIRONMENT s38).
+ * Contracts say how many they hold (`max_influences`, 8 if absent: the older dumps).
+ */
+export const MAXW = 16;
 
 export type Bone = {
   name: string;
@@ -113,16 +118,35 @@ type JsonMesh = Omit<Mesh, 'position' | 'uv' | 'normal' | 'vertex' | 'joints' | 
   weights: number;
   indices: number;
   triangle_material: number;
-  morphs: (Omit<Morph, 'delta'> & { delta: number })[];
+  /** dense f32x3 per vertex at `delta`; or sparse (the ufbx shim): `count` vertices at `index` (u32) with f32x3 at `delta` */
+  morphs: (Omit<Morph, 'delta'> & { delta: number; count?: number; index?: number })[];
 };
 type JsonContract = Omit<Contract, 'meshes' | 'images'> & {
+  max_influences?: number;
   meshes: JsonMesh[];
   images: (Omit<Image, 'data'> & { data?: number })[];
 };
 
-/** Views into `bin`; nothing is copied. */
+/** Per-vertex influences from `stride` to MAXW slots (an older 8-wide contract). */
+function restride<T extends Uint16Array | Float32Array>(a: T, n: number, stride: number): T {
+  if (stride === MAXW) return a;
+  const out = new (a.constructor as new (len: number) => T)(n * MAXW);
+  const k = Math.min(stride, MAXW);
+  for (let v = 0; v < n; v++) out.set(a.subarray(v * stride, v * stride + k), v * MAXW);
+  return out;
+}
+
+/** A sparse morph made dense: the rest of the converter indexes deltas by vertex. */
+function denseDelta(n: number, count: number, index: Uint32Array, values: Float32Array): Float32Array {
+  const d = new Float32Array(n * 3);
+  for (let i = 0; i < count; i++) d.set(values.subarray(i * 3, i * 3 + 3), index[i]! * 3);
+  return d;
+}
+
+/** Views into `bin` (sparse morphs are expanded into arrays of their own). */
 export function readContract(json: string, bin: Uint8Array): Contract {
   const doc = JSON.parse(json) as JsonContract;
+  const stride = doc.max_influences ?? 8;
   const view = <T>(C: new (b: ArrayBufferLike, o: number, n: number) => T, off: number, n: number): T =>
     new C(bin.buffer, bin.byteOffset + off, n);
   return {
@@ -135,11 +159,16 @@ export function readContract(json: string, bin: Uint8Array): Contract {
         uv: view(Float32Array, m.uv, n * 2),
         normal: m.normal === undefined ? undefined : view(Float32Array, m.normal, n * 3),
         vertex: m.vertex === undefined ? undefined : view(Uint32Array, m.vertex, n),
-        joints: view(Uint16Array, m.joints, n * MAXW),
-        weights: view(Float32Array, m.weights, n * MAXW),
+        joints: restride(view(Uint16Array, m.joints, n * stride), n, stride),
+        weights: restride(view(Float32Array, m.weights, n * stride), n, stride),
         indices: view(Uint32Array, m.indices, t * 3),
         triangle_material: view(Uint16Array, m.triangle_material, t),
-        morphs: m.morphs.map((k) => ({ ...k, delta: view(Float32Array, k.delta, n * 3) })),
+        morphs: m.morphs.map(({ count, index, ...k }) => ({
+          ...k,
+          delta: count === undefined || index === undefined
+            ? view(Float32Array, k.delta, n * 3)
+            : denseDelta(n, count, view(Uint32Array, index, count), view(Float32Array, k.delta, count * 3)),
+        })),
       };
     }),
     images: doc.images.map((i) => (i.data !== undefined ? { ...i, data: view(Uint8Array, i.data, i.bytes) } : { ...i, data: undefined })),
@@ -163,6 +192,7 @@ export function writeContract(c: Contract): { json: string; bin: Uint8Array } {
   };
   const doc: JsonContract = {
     ...c,
+    max_influences: MAXW,
     meshes: c.meshes.map(({ vertex, normal, ...m }) => ({
       ...m,
       position: put(m.position),

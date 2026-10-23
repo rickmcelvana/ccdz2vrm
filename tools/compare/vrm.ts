@@ -14,7 +14,7 @@
 // Exit 1 when either part fails.
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { writeContract, type Contract, type Mesh } from '../../app/src/convert/contract.ts';
+import { MAXW, writeContract, type Contract, type Mesh } from '../../app/src/convert/contract.ts';
 import { resize, type Pixels } from '../../app/src/convert/images.ts';
 import { mul, type Mat4 } from '../../app/src/convert/pose.ts';
 import { nodeCodec } from '../port/codec.ts';
@@ -148,7 +148,7 @@ function toContract(g: Glb, source: string): Contract {
             nrm.push(...q.map((x) => x / l));
           }
           uv.push(T[v * 2]!, 1 - T[v * 2 + 1]!);
-          for (let k = 0; k < 8; k++) {
+          for (let k = 0; k < MAXW; k++) {
             jn.push(J && k < 4 ? (boneOf.get(skinJoints[J[v * 4 + k]!]!) ?? 0) : 0);
             wt.push(W && k < 4 ? W[v * 4 + k]! : 0);
           }

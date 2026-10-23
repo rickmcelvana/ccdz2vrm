@@ -8,9 +8,12 @@
 //   bones:  name, parent, world rest matrix (column-major) -- from the skin cluster's
 //           bind_to_world, else the scene bind pose, else node_to_world
 //   meshes: one per mesh instance; vertices split per (position, uv) pair like a glTF
-//           export; position f32x3, uv f32x2, joints u16x8 + weights f32x8 (top 8, into
+//           export; position f32x3, uv f32x2, joints u16x16 + weights f32x16 (top 16, into
 //           `bones`), triangle indices u32x3, triangle material u16, and every blend
-//           channel's full-weight shape as f32x3 deltas per split vertex
+//           channel's full-weight shape, sparse: `count` split vertices that move, their
+//           indices (u32, `index`) and f32x3 deltas (`delta`). Dense, the 166 FACS keys Daz
+//           puts on every mesh came to ~690 MB for one 346k-vertex hair: past what wasm32's
+//           4 GB holds once the buffer doubles (ENVIRONMENT s38).
 //   images: embedded content, identified by fnv1a() below (dump_contract.py hashes the same)
 
 #include "ufbx.h"
@@ -20,7 +23,20 @@
 #include <string.h>
 
 #define EXPORT(name) __attribute__((export_name(name)))
-#define MAXW 8
+
+// Out of memory traps (wasm `unreachable`). WebAssembly has no null-pointer fault: an unchecked
+// NULL from realloc let writes land at address 0 and silently corrupt the parse. The page makes
+// a fresh instance per file and reports the trap. (ufbx.c checks its own allocations.)
+static void *need(void *p) {
+	if (!p) __builtin_trap();
+	return p;
+}
+#define malloc(n) need(malloc((n) ? (n) : 1))
+#define calloc(n, k) need(calloc((n) ? (n) : 1, (k) ? (k) : 1))
+#define realloc(p, n) need(realloc(p, (n) ? (n) : 1))
+// skin influences kept per vertex: Daz clothing carries up to 11 (a Bardot top), and Blender's
+// pose bake uses every one (ENVIRONMENT s38)
+#define MAXW 16
 
 typedef struct { char *p; size_t n, cap; } buf;
 
@@ -30,7 +46,10 @@ static char err[1024];
 static void put(buf *b, const void *d, size_t n) {
 	if (b->n + n > b->cap) {
 		size_t c = b->cap ? b->cap : 1 << 16;
-		while (c < b->n + n) c *= 2;
+		while (c < b->n + n) {
+			if (c > SIZE_MAX / 2) __builtin_trap();
+			c *= 2;
+		}
 		b->p = realloc(b->p, c);
 		b->cap = c;
 	}
@@ -183,14 +202,25 @@ static void write_mesh(ufbx_scene *s, ufbx_node *node, uint32_t *bone_of_node, i
 	if (skin) {
 		for (uint32_t v = 0; v < nsplit; v++) {
 			ufbx_skin_vertex sv = skin->vertices.data[pos_of_split[v]];
-			// keep the MAXW largest
+			// the MAXW largest, by weight and then bone order: Blender's limit to 4 keeps, of two
+			// equal weights, the one whose vertex group came first (a Bardot skirt's pelvis over
+			// cb_rShin, both 0.00614938606), and the importer makes groups in the order of the
+			// skeleton's bones -- the file's hierarchy order, which `bones` follows too
+			int cl[MAXW];
+			int nk = 0;
+			float *wt = WT + (size_t)v * MAXW;
+			uint16_t *jn = JN + (size_t)v * MAXW;
 			for (uint32_t k = 0; k < sv.num_weights; k++) {
 				ufbx_skin_weight w = skin->weights.data[sv.weight_begin + k];
 				int b = bone_index(s, skin->clusters.data[w.cluster_index]->bone_node, bone_of_node);
-				if (b < 0) continue;
-				int slot_i = -1;
-				for (int q = 0; q < MAXW; q++) if (slot_i < 0 || WT[v * MAXW + q] < WT[v * MAXW + slot_i]) slot_i = q;
-				if ((float)w.weight > WT[v * MAXW + slot_i]) { WT[v * MAXW + slot_i] = (float)w.weight; JN[v * MAXW + slot_i] = (uint16_t)b; }
+				float fw = (float)w.weight;
+				if (b < 0 || !(fw > 0)) continue;
+				int q = 0;
+				while (q < nk && (wt[q] > fw || (wt[q] == fw && cl[q] < b))) q++;
+				if (q >= MAXW) continue;
+				for (int r = nk < MAXW ? nk : MAXW - 1; r > q; r--) { wt[r] = wt[r - 1]; jn[r] = jn[r - 1]; cl[r] = cl[r - 1]; }
+				wt[q] = fw; jn[q] = (uint16_t)b; cl[q] = b;
+				if (nk < MAXW) nk++;
 			}
 		}
 	}
@@ -250,6 +280,7 @@ static void write_mesh(ufbx_scene *s, ufbx_node *node, uint32_t *bone_of_node, i
 	js("],\"morphs\":[");
 	int fm = 1;
 	float *D = malloc(nsplit * 12);
+	uint32_t *DI = malloc(nsplit * 4);
 	for (size_t d = 0; d < m->blend_deformers.count; d++) {
 		ufbx_blend_deformer *bd = m->blend_deformers.data[d];
 		for (size_t c = 0; c < bd->channels.count; c++) {
@@ -262,9 +293,14 @@ static void write_mesh(ufbx_scene *s, ufbx_node *node, uint32_t *bone_of_node, i
 				uint32_t v = sh->offset_vertices.data[o];
 				if (v < m->num_vertices) dv[v] = ufbx_transform_position(&lin, sh->position_offsets.data[o]);
 			}
+			size_t k = 0;
 			for (uint32_t v = 0; v < nsplit; v++) {
 				ufbx_vec3 x = dv[pos_of_split[v]];
-				D[v * 3] = (float)x.x; D[v * 3 + 1] = (float)x.y; D[v * 3 + 2] = (float)x.z;
+				float f[3] = {(float)x.x, (float)x.y, (float)x.z};
+				if (!f[0] && !f[1] && !f[2]) continue;
+				DI[k] = v;
+				memcpy(D + k * 3, f, 12);
+				k++;
 			}
 			free(dv);
 			if (!fm) js(",");
@@ -272,12 +308,14 @@ static void write_mesh(ufbx_scene *s, ufbx_node *node, uint32_t *bone_of_node, i
 			js("{\"name\":"); jstr(ch->name.data, ch->name.length);
 			js(",\"shape\":"); jstr(sh->name.data, sh->name.length);
 			js(",\"inbetweens\":"); ju(ch->keyframes.count ? ch->keyframes.count - 1 : 0);
-			js(",\"delta\":"); ju(bin(D, nsplit * 12));
+			js(",\"count\":"); ju(k);
+			js(",\"index\":"); ju(bin(DI, k * 4));
+			js(",\"delta\":"); ju(bin(D, k * 12));
 			js("}");
 		}
 	}
 	js("]}");
-	free(D); free(P); free(UV); free(N); free(JN); free(WT); free(T); free(TM); free(tmp);
+	free(D); free(DI); free(P); free(UV); free(N); free(JN); free(WT); free(T); free(TM); free(tmp);
 	free(split_of_index); free(pos_of_split); free(idx_of_split); free(H);
 }
 
@@ -348,7 +386,7 @@ EXPORT("ccdz_load") int ccdz_load(const void *data, size_t size) {
 			if (is_bone[t] && !have[t]) { rest[t] = ps->bone_poses.data[k].bone_to_world; have[t] = 1; }
 		}
 	}
-	js("{\"source\":\"ufbx\",\"ufbx_version\":\"");
+	js("{\"source\":\"ufbx\",\"max_influences\":16,\"ufbx_version\":\"");
 	ju(UFBX_HEADER_VERSION / 1000000); js("."); ju(UFBX_HEADER_VERSION / 1000 % 1000); js("."); ju(UFBX_HEADER_VERSION % 1000);
 	js("\",\"bones\":[");
 	uint32_t nb = 0;

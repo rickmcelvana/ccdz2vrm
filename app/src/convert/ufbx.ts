@@ -36,10 +36,17 @@ export function ufbxParser(module: WebAssembly.Module): (fbx: Uint8Array) => Pro
     const x = instance.exports as unknown as Exports;
     memory = x.memory;
     x._initialize(); // eslint-disable-line no-underscore-dangle -- the WASI reactor's entry point
-    const ptr = x.ccdz_alloc(fbx.byteLength);
-    if (!ptr) throw new Error('Not enough memory to read this file.');
-    new Uint8Array(memory.buffer, ptr, fbx.byteLength).set(fbx);
-    const rc = x.ccdz_load(ptr, fbx.byteLength);
+    let rc: number, ptr = 0;
+    try {
+      ptr = x.ccdz_alloc(fbx.byteLength);
+      new Uint8Array(memory.buffer, ptr, fbx.byteLength).set(fbx);
+      rc = x.ccdz_load(ptr, fbx.byteLength);
+    } catch (e) {
+      // the shim traps when wasm32's 4 GB run out (ufbx_contract.c `need`)
+      if (e instanceof WebAssembly.RuntimeError)
+        throw new Error("This FBX is too large for the built-in reader (it ran out of its 4 GB of memory). The desktop app's Blender (reference) converter can still convert it.", { cause: e });
+      throw e;
+    }
     x.ccdz_free(ptr);
     if (rc) {
       const msg = new TextDecoder().decode(new Uint8Array(memory.buffer, x.ccdz_error(), 1024)).split('\0')[0];

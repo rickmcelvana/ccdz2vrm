@@ -1073,3 +1073,43 @@ needs no Zig.
 - **[R]** The app's built-in conversion has not been clicked through in the packaged app here:
   the page and worker are verified in Chromium (which WebView2 is), and the Rust commands only
   by compiling and the decoder's unit test.
+
+## 38. Built-in converter: "no mesh skinned to the face bones" on a big FACS export [V] — 2026-10-23
+
+Reported from the installed app: the built-in converter failed on an export that Blender's
+reference converted fine. It reproduced in Node on `imports/alice_genesis8.1_03.fbx` (339 MB;
+Genesis 8.1 with FACS morphs, a 346k-vertex hair, Bardot top and skirt); 04–07 converted.
+
+**Cause: the raw import was corrupt.** The body carried no bone weights; the lashes and hair
+referenced thousands of bones that don't exist. The FACS export puts its 166 keys on *every*
+mesh, and the shim wrote morphs densely: ~690 MB for the hair alone. The shim's output buffer
+doubles as it grows, and inside WebAssembly's 4 GB the realloc failed. The shim didn't check
+it, and WebAssembly has no null-pointer fault, so the writes went to address 0 and silently
+corrupted memory. The adapter then found no mesh on the eyelid bones.
+
+Fixes, in `tools/fbx-spike/ufbx_contract.c` (`app/src/convert/ufbx_contract.wasm` rebuilt):
+- **Sparse morphs.** Each key is now the split vertices that move (`count`, u32 `index`) and
+  their deltas; `readContract` (and `tools/compare/contract.mjs`) expand them. Morphs move 5–30 %
+  of a mesh's vertices (body 5.5 %, hair 15–17 %), so that is about 5× less.
+- **Out of memory traps.** Every allocation is checked; a failure (or a buffer past 2 GB)
+  executes `unreachable`. `ufbx.ts` turns the trap into "too large for the built-in reader … the
+  desktop app's Blender (reference) converter can still convert it". No more silent corruption.
+- **16 skin influences per vertex, not 8.** With the face fixed, the Bardot top still sat
+  0.56 mm off Blender's on 102 vertices. Blender imports it with up to 11 influences (530
+  vertices over 8; the body has 34), and its A → T bake uses all of them. Contracts now carry 16
+  and say so (`max_influences`; older 8-wide dumps still read). Bardot top: adapter exact.
+- **Equal weights tie-break as Blender's.** One skirt vertex was 0.69 mm off: `pelvis` and
+  `cb_rShin` both weighed 0.00614938606, and limiting to 4 kept a different one. Blender keeps
+  the one whose vertex group came first. Its importer creates groups in the skeleton's bone
+  order (the item skeleton's hierarchy: `pelvis.004`, `lThighBend.001`, `cb_lShin`, …), not the
+  FBX cluster order. The shim now orders each vertex's influences by weight, then bone order.
+  Skirt: 0.025 mm.
+
+**Result.**
+- **Export 03** (Node, and Chromium in 15 s) and **07** match Blender's VRMs: humanoid, 70
+  expressions, every bone, every mesh's positions. The one exception is the Bardot top's
+  normals (p99 7.2–7.6°).
+- **That exception is the §34 class:** G8's RRTop is unchanged at 8.35° with the 16 influences
+  (positions exact). So it is *not* the influence cut; it stays a documented normal residual on
+  Daz tops.
+- **The five test exports**, re-judged from their FBX files (`run_e2e.sh`, 15 conversions): the same as before, 12 pass and G8's three fail only on RRTop's normals.

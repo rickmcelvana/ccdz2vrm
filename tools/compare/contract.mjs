@@ -29,7 +29,17 @@ function load(p) {
   const doc = JSON.parse(readFileSync(`${p}.json`, 'utf8'));
   const bin = readFileSync(`${p}.bin`);
   const view = (T, off, n) => new T(bin.buffer, bin.byteOffset + off, n);
-  return { doc, f32: (o, n) => view(Float32Array, o, n), u16: (o, n) => view(Uint16Array, o, n), u32: (o, n) => view(Uint32Array, o, n) };
+  // sparse morphs (the ufbx shim writes `count` + `index`) expanded in place of `delta`
+  const dense = new Map();
+  for (const m of doc.meshes)
+    for (const k of m.morphs) {
+      if (k.count === undefined) continue;
+      const d = new Float32Array(m.vertex_count * 3), idx = view(Uint32Array, k.index, k.count), val = view(Float32Array, k.delta, k.count * 3);
+      for (let i = 0; i < k.count; i++) d.set(val.subarray(i * 3, i * 3 + 3), idx[i] * 3);
+      k.delta = `dense:${dense.size}`;
+      dense.set(k.delta, d);
+    }
+  return { doc, f32: (o, n) => dense.get(o) ?? view(Float32Array, o, n), u16: (o, n) => view(Uint16Array, o, n), u32: (o, n) => view(Uint32Array, o, n) };
 }
 
 const base = (n) => n.replace(/\.\d+$/, '');
@@ -192,8 +202,10 @@ for (const [i, j] of pairs) {
   }
 
   // skin weights, compared by bone base name
-  const JA = A.u16(ma.joints, ma.vertex_count * 8), WA = A.f32(ma.weights, ma.vertex_count * 8);
-  const JB = B.u16(mb.joints, mb.vertex_count * 8), WB = B.f32(mb.weights, mb.vertex_count * 8);
+  // influences per vertex: what each contract says it holds (8 in the older ones)
+  const SA = A.doc.max_influences ?? 8, SB = B.doc.max_influences ?? 8;
+  const JA = A.u16(ma.joints, ma.vertex_count * SA), WA = A.f32(ma.weights, ma.vertex_count * SA);
+  const JB = B.u16(mb.joints, mb.vertex_count * SB), WB = B.f32(mb.weights, mb.vertex_count * SB);
   let skinned = 0, agree = 0;
   const l1 = [];
   for (let v = 0; v < ma.vertex_count; v++) {
@@ -201,10 +213,10 @@ for (const [i, j] of pairs) {
     if (w < 0) continue;
     const wa = new Map(), wb = new Map();
     let sa = 0, sb = 0;
-    for (let k = 0; k < 8; k++) {
-      if (WA[v * 8 + k] > 0) { const n = refBoneName(JA[v * 8 + k]); wa.set(n, (wa.get(n) ?? 0) + WA[v * 8 + k]); sa += WA[v * 8 + k]; }
-      if (WB[w * 8 + k] > 0) { const n = newBoneName(JB[w * 8 + k]); wb.set(n, (wb.get(n) ?? 0) + WB[w * 8 + k]); sb += WB[w * 8 + k]; }
-    }
+    for (let k = 0; k < SA; k++)
+      if (WA[v * SA + k] > 0) { const n = refBoneName(JA[v * SA + k]); wa.set(n, (wa.get(n) ?? 0) + WA[v * SA + k]); sa += WA[v * SA + k]; }
+    for (let k = 0; k < SB; k++)
+      if (WB[w * SB + k] > 0) { const n = newBoneName(JB[w * SB + k]); wb.set(n, (wb.get(n) ?? 0) + WB[w * SB + k]); sb += WB[w * SB + k]; }
     if (!sa && !sb) continue;
     skinned++;
     // agree when the reference's strongest bone is also (one of) the candidate's strongest:

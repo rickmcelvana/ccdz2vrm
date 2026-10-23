@@ -10,7 +10,7 @@ browser port is compared against.
 
 Writes <out>.json + <out>.bin. Same format as tools/fbx-spike/ufbx_contract.c: glTF frame
 (Y up, +Z front, metres); bones with world rest matrices; meshes with vertices split per
-(vertex, uv) like a glTF export, top-8 skin weights, triangles, per-triangle material and
+(vertex, uv) like a glTF export, top-16 skin weights, triangles, per-triangle material and
 every shape key as per-vertex deltas; images identified by FNV-1a over length + first and
 last 64 KB; materials as the Principled BSDF the finisher reads (base colour, alpha and
 which image output drives it, roughness, metallic, normal map and whether it was made from
@@ -43,7 +43,7 @@ elif clean:
 else:
     (out,) = args
 
-MAXW = 8
+MAXW = 16  # skin influences per vertex; Daz clothing carries up to 11 (ENVIRONMENT s38)
 # Blender world (Z up, -Y front) -> glTF world (Y up, +Z front)
 C = Matrix(((1, 0, 0, 0), (0, 0, 1, 0), (0, -1, 0, 0), (0, 0, 0, 1)))
 C3 = np.array(C.to_3x3())
@@ -219,6 +219,7 @@ for img in bpy.data.images:
                    "generated": generated})
 
 doc = {"source": "blender-raw" if raw else "blender-clean" if clean else "blender", "blender": bpy.app.version_string,
+       "max_influences": MAXW,
        "bones": bones, "meshes": meshes, "materials": materials, "images": images}
 os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
 with open(out + ".json", "w", encoding="utf-8") as f:
