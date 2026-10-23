@@ -1002,3 +1002,74 @@ options are `springBones` and `twistSplit`. References come from `tools/port/mak
 - **Springs** (`tools/validate/springs.mjs` → `spring_test.js`, Alice): idle drift 0.94 / 0.96
   cm (Blender / ours), 8.02 / 8.01 cm lag during the head shake, 0.75 / 0.88 cm after settling;
   head-collider clearance 2.6 cm on both.
+
+## 37. Browser port, Phase 7: shipped — the static site and the desktop app's default [V] — 2026-10-23
+
+**What ships.** `app/src/convert/convert.ts` runs one conversion: ufbx WASM → cleanup →
+`adaptCc` / `adaptDaz` → `finish` → a `vrm_check`-style check (counts, required humanoid bones).
+It is platform-free: `worker.ts` runs it in a module Web Worker with the browser codec
+(`browserCodec.ts`), and `tools/port/convert.ts` runs the identical code in Node.
+
+The page side is `builtin.ts`. It starts the worker, maps its messages onto the job events the
+page already showed for Blender (4 stages: reading, face and pose, building, checking), and
+cancels by terminating the worker.
+
+There are three backends:
+- **browser** (`browserBackend.ts`): pick or drop, convert, download; nothing uploaded.
+- **Tauri**: built-in by default. Rust `read_fbx` hands over the bytes and `write_vrm` saves the
+  result (raw IPC body, path in a percent-encoded header). "Blender (reference)" runs the old
+  pipeline.
+- **fake** (`?fake`): for page work.
+
+The tiers are planned as `pipeline.rs` plans them: web = 1024 px + web encoding + Daz hair to
+50k vertices; desktop = 1024 px; max = 2048 px. Springs are on by default; the twist split
+applies to Daz only. FBX inspection is a TS port of `fbx.rs` (`inspect.ts`, same tests).
+
+**Image coding, one implementation.** `png.ts` decodes and encodes PNG in both the browser and
+Node:
+- the decoder is pixel-identical to pngjs on all 71 PNGs in the test exports (`pngcheck.ts`);
+- the encoder uses libpng's adaptive filter.
+
+Only zlib (CompressionStream vs node:zlib, both at zlib defaults) and JPEG decoding
+(createImageBitmap vs jpeg-js) differ. Two traps on the way:
+- per-pixel arrays in the decoder made it 5× slower than pngjs (Ira 49 s → 11 s once fixed);
+- zlib's RLE strategy, good for filtered truecolor rows, made palette PNGs bigger (G3 web
+  6.9 → 6.4 MB on defaults).
+
+**The shipped path against Blender**, from each FBX file (`tools/port/run_e2e.sh`), with the
+references' settings: 12 of 15 pass. The other 3 are G8 at every tier, failing only on the §34
+RRTop normal residual. That covers Ira, ALICE-00001a, Alice G8.1, G8 and G3 at web, desktop
+and max.
+
+The browser's own output (`tools/validate/site_e2e.mjs`: the built `dist/` in Chromium, file
+chooser, Convert, Download) passes the same comparison; Ira web and G8 web were checked.
+Khronos validator: 0 errors; three-vrm ok.
+
+**Time, the whole conversion:**
+
+| | Chromium (site) | Node | Blender reference |
+|---|---|---|---|
+| Ira (CC), web | 11 s | 17 s | |
+| Alice G8.1, web | 16 s | 54 s* | 1 min 49 s (the app's runner test, `converts_a_real_export`) |
+| G3, web | 15 s | 38 s | |
+| G8, web / max (92 MB VRM) | 63 s / 63 s | 109 s* / 77 s | |
+
+\* while other runs shared the CPU. The browser decodes images natively; Node decodes JPEG in
+pure JS.
+
+Memory: G8 is a 126 MB FBX with a 364k-vertex hair, and it converts in a Chromium tab without
+trouble. The site also works when its host serves `.wasm` as `application/octet-stream`: the
+worker falls back from `compileStreaming` to `compile`.
+
+**Static site.** `pnpm build` → `dist/`, about 4 MB: page JS 1.2 MB, worker 0.24 MB, ufbx WASM
+2.4 MB (0.9 MB gzipped), mozjpeg WASM 0.25 MB. `base: './'` lets it sit in any folder.
+`ufbx_contract.wasm` is committed, rebuilt by `tools/fbx-spike/build.sh`, so a site build
+needs no Zig.
+
+**Desktop app.**
+- The installer is 3.4 MB.
+- The built-in engine's Rust side (`read_fbx`, `write_vrm`, `percent_decode` + test) is
+  compiled and clippy-clean.
+- **[R]** The app's built-in conversion has not been clicked through in the packaged app here:
+  the page and worker are verified in Chromium (which WebView2 is), and the Rust commands only
+  by compiling and the decoder's unit test.

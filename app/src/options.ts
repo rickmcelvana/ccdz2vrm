@@ -2,7 +2,7 @@
 // The flags themselves are planned in Rust (src-tauri/src/pipeline.rs); this is the wording
 // and the defaults.
 
-import type { ConvertRequest, FbxInfo, Quality } from './types';
+import type { ConvertRequest, Engine, FbxInfo, Quality } from './types';
 
 export type QualityInfo = {
   id: Quality;
@@ -58,8 +58,9 @@ export function outputFile(choices: Choices): string {
   return `${choices.name}${suffix}.vrm`;
 }
 
-export function request(fbx: FbxInfo, choices: Choices, outDir: string): ConvertRequest {
+export function request(fbx: FbxInfo, choices: Choices, outDir: string, engine: Engine = 'builtin'): ConvertRequest {
   return {
+    engine,
     fbx: fbx.path,
     kind: fbx.kind,
     name: choices.name || 'avatar',
@@ -69,6 +70,18 @@ export function request(fbx: FbxInfo, choices: Choices, outDir: string): Convert
     twistSplit: choices.twistSplit && twistAvailable(fbx),
   };
 }
+
+/** Where a VRM lands: the output folder plus outputFile, with the folder's own separator. */
+export function outputPath(outDir: string, choices: Choices): string {
+  if (!outDir) return outputFile(choices);
+  const sep = outDir.includes('\\') ? '\\' : '/';
+  return `${outDir.replace(/[\\/]+$/, '')}${sep}${outputFile(choices)}`;
+}
+
+export const ENGINES: readonly { id: Engine; label: string; blurb: string }[] = [
+  { id: 'builtin', label: 'Built-in', blurb: 'Converts right here, nothing else to install.' },
+  { id: 'blender', label: 'Blender (reference)', blurb: 'The original pipeline in your own Blender 4.2+ with the VRM add-on. Slower; for comparing results.' },
+];
 
 export function formatBytes(n: number): string {
   if (n >= 1e6) return `${(n / 1e6).toFixed(n >= 1e8 ? 0 : 1)} MB`;

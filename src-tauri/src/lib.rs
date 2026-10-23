@@ -1,7 +1,9 @@
 //! The desktop shell: the page asks, Rust does every file and process job.
 //!
-//! Conversion runs in the user's own Blender (see blender.rs for why none ships). The pipeline
-//! scripts travel as resources (`pipeline/`); a debug build reads them from the repo instead.
+//! Conversion runs in the page by default (the built-in converter: app/src/convert/, in a Web
+//! Worker); Rust reads the FBX and writes the VRM for it. The reference mode runs the user's own
+//! Blender (see blender.rs for why none ships) on the pipeline scripts, which travel as
+//! resources (`pipeline/`); a debug build reads them from the repo instead.
 
 mod blender;
 mod fbx;
@@ -197,6 +199,65 @@ async fn read_vrm(path: String) -> Result<tauri::ipc::Response, String> {
     Ok(tauri::ipc::Response::new(bytes))
 }
 
+/// An FBX's bytes for the built-in converter. Only .fbx files are served.
+#[tauri::command]
+async fn read_fbx(path: String) -> Result<tauri::ipc::Response, String> {
+    if !path.to_ascii_lowercase().ends_with(".fbx") {
+        return Err("Only .fbx files can be converted.".into());
+    }
+    let bytes = tauri::async_runtime::spawn_blocking(move || std::fs::read(path))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("Could not read the file: {e}"))?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// The built-in converter's VRM: raw bytes in the body, the destination (percent-encoded, as
+/// headers are ASCII) in the `path` header. Only .vrm files are written.
+#[tauri::command]
+async fn write_vrm(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("expected the VRM's bytes".into());
+    };
+    let path = request
+        .headers()
+        .get("path")
+        .and_then(|v| v.to_str().ok())
+        .map(percent_decode)
+        .ok_or("no path given")??;
+    if !path.to_ascii_lowercase().ends_with(".vrm") {
+        return Err("Only .vrm files can be written.".into());
+    }
+    let bytes = bytes.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(dir) = Path::new(&path).parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&path, bytes)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+/// `encodeURIComponent` undone: `%XX` bytes, then UTF-8.
+fn percent_decode(s: &str) -> Result<String, String> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            let hex = std::str::from_utf8(&b[i + 1..i + 3]).map_err(|e| e.to_string())?;
+            out.push(u8::from_str_radix(hex, 16).map_err(|e| e.to_string())?);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn reveal(app: AppHandle, path: String) -> Result<(), String> {
     app.opener()
@@ -236,9 +297,27 @@ pub fn run() {
             start_convert,
             cancel_convert,
             read_vrm,
+            read_fbx,
+            write_vrm,
             reveal,
             open_link
         ])
         .run(tauri::generate_context!())
         .expect("error while running the app");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::percent_decode;
+
+    #[test]
+    fn decodes_encode_uri_component() {
+        // encodeURIComponent(r"D:\Avatars\Zoë.web.vrm")
+        assert_eq!(
+            percent_decode("D%3A%5CAvatars%5CZo%C3%AB.web.vrm").unwrap(),
+            r"D:\Avatars\Zoë.web.vrm"
+        );
+        assert_eq!(percent_decode("plain.vrm").unwrap(), "plain.vrm");
+        assert!(percent_decode("bad%ZZ").is_err());
+    }
 }

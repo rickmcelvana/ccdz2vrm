@@ -90,7 +90,7 @@ function crc32(b: Uint8Array): number {
   return (c ^ 0xffffffff) >>> 0;
 }
 
-function pngChunk(type: string, body: Uint8Array): Uint8Array {
+export function pngChunk(type: string, body: Uint8Array): Uint8Array {
   const out = new Uint8Array(12 + body.length);
   const dv = new DataView(out.buffer);
   dv.setUint32(0, body.length);

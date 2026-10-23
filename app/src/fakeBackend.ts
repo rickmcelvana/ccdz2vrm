@@ -1,8 +1,10 @@
-// Dev-only stand-in for the Rust shell (see backend.ts). It plays back the stages of a real
-// conversion and serves a real VRM from out/, so the viewer is checked against real output.
+// Dev-only stand-in for the Rust shell (see backend.ts), at http://localhost:5174/?fake. It plays
+// back the stages of a real conversion and serves a real VRM from out/, so the page is checked
+// against real output without converting.
 //
 //   ?vrm=out/app_test/genesis8_1AliceTest_01.web.vrm   which VRM the "conversion" produces
 //   ?blender=missing|noaddon|old                       setup states to look at
+//   ?engine=blender                                    start on the Blender (reference) converter
 //   ?fail=1                                            a conversion that fails in stage 1
 
 import type { Backend } from './backend';
@@ -45,6 +47,8 @@ export function fakeBackend(): Backend {
 
   return {
     kind: 'fake',
+    engines: params.get('engine') === 'blender' ? ['blender', 'builtin'] : ['builtin', 'blender'],
+    saveLabel: 'Show in folder',
     blenderStatus: async () => (await sleep(500), status()),
     setBlender: async () => status(),
     pickBlender: async () => status(),

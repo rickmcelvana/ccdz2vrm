@@ -8,24 +8,28 @@ and what the **content** you feed it allows.
 
 | Component | Licence | Role |
 |---|---|---|
-| **Blender** | GPL-2.0-or-later | Runs the pipeline (`blender --background --python …`). Invoked as a separate program; not bundled. |
+| **Blender** | GPL-2.0-or-later | Runs the reference pipeline (`blender --background --python …`). Invoked as a separate program; not bundled. |
 | **Blender VRM Add-on** | MIT | VRM 1.0 export (installed 4.7.1). |
 | **numpy**, **Pillow** | BSD / MIT-CMU | Web tier post-pass (`glb_web.py`). |
 | **three.js**, **@pixiv/three-vrm** | MIT | Viewer and runtime check (`tools/viewer`). |
 | **Tauri 2** + `tauri-plugin-dialog` / `-opener` | MIT / Apache-2.0 | The desktop shell. |
 | **React**, **Vite**, **Vitest**, **oxlint** / **TypeScript** | MIT / Apache-2.0 | The page and its build. |
 | **memchr** (crate) | MIT / Unlicense | FBX byte scan (`fbx.rs`). |
-| **ufbx** 0.23.1 | MIT or Unlicense | FBX parser for the browser port (`tools/fbx-spike`, fetched at build time). |
+| **ufbx** 0.23.1 | MIT or Unlicense | The built-in converter's FBX parser, compiled to WASM with our shim (`tools/fbx-spike`; the build ships as `app/src/convert/ufbx_contract.wasm`). |
+| **meshoptimizer** 1.3.0 (npm) | MIT | Web-tier mesh reduction (`decimate.ts`). |
+| **@jsquash/jpeg** 1.6.0 (npm; mozjpeg) | Apache-2.0 (mozjpeg: IJG + BSD-3-Clause + zlib) | JPEG encoding in the converter (`codecs.ts`). |
 | **Zig** 0.17.0 (build tool only) | MIT | Compiles ufbx to WASM; nothing of it ships. |
-| **jpeg-js** / **pngjs** (npm) | BSD-3-Clause / MIT | Image decoding in the Node port harness only (`tools/port`); the browser decodes with `createImageBitmap`. Dev dependencies. |
+| **jpeg-js** / **pngjs** (npm) | BSD-3-Clause / MIT | Node harness only: jpeg-js decodes JPEG there (the browser uses `createImageBitmap`); pngjs checks our PNG decoder (`tools/port/pngcheck.ts`). Dev dependencies. |
 | **Khronos glTF validator** (`gltf-validator`, npm) | Apache-2.0 | `tools/validate`, dev dependency. |
 | **Playwright** (npm) + Chromium | Apache-2.0 / BSD | Headless three-vrm check and the port harness, dev dependency. |
 
-The app (`app/`, `src-tauri/`) contains no Blender code: it starts the user's own Blender as a
-separate program, the way the CLI does. The scripts in `src/blender/` and `scripts/` import
-`bpy`. The Blender Foundation's position is that scripts using its Python API are covered by
-Blender's GPL when distributed, and the app's installer carries them (as `pipeline/`); pick this
-repo's licence with that in mind (see the open question in `CLAUDE.md`).
+The built-in converter (`app/src/convert/`) contains no Blender code: TypeScript plus the WASM
+builds above, so the static site (`dist/`) carries none. The desktop app's reference mode starts
+the user's own Blender as a separate program, the way the CLI does, on the scripts in
+`src/blender/`, which import `bpy`. The Blender Foundation's position is that scripts using its
+Python API are covered by Blender's GPL when distributed, and the app's installer carries them
+(as `pipeline/`); pick this repo's licence with that in mind (see the open question in
+`CLAUDE.md`) -- or ship the app without the reference mode.
 
 Audit before adding a component: is the *weights/data* licence separate from the *code* licence?
 Does it trace to SMPL / SMPL-X / MANO / FLAME? (reject). Add it to the table above **in the same

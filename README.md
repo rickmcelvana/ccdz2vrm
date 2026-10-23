@@ -5,42 +5,52 @@ avatar**: rigged, with a face that blinks, talks (visemes) and makes ARKit-52 ex
 that follow, and optionally swinging hair. Built for
 [latentPresence](https://latentpresence.com); useful anywhere VRM 1.0 loads (three-vrm, UniVRM).
 
-Everything runs on your machine. Your Daz/CC content never leaves it, and no Daz/CC asset ships
-with this repo ([docs/LICENSING.md](docs/LICENSING.md)).
+Everything runs on your machine, in the browser or the desktop app. Your Daz/CC content never
+leaves it, and no Daz/CC asset ships with this repo ([docs/LICENSING.md](docs/LICENSING.md)).
+
+## In your browser
+
+The converter runs in the page: drop the `.fbx`, pick a quality, press **Convert to VRM**, look
+at the result, download it. Nothing is uploaded and nothing needs installing. Chrome, Edge or
+another Chromium browser is what it is tested in; a Daz character takes 15 s to a minute, a CC
+character about ten seconds.
+
+It is a static site: `pnpm build` writes it to `dist/`, which any static host serves as it is
+(any folder; `.wasm` with or without the right MIME type).
 
 ## The app (Windows)
 
-A desktop app does the whole conversion for you: drop the `.fbx`, pick a quality, press
-**Convert to VRM**, and look at the result. It blinks, its eyes follow your pointer, and it talks
-and smiles at a click.
+The same page as a desktop app, which saves VRMs straight to a folder (`Documents\ccdz2vrm`
+unless you choose another) and opens them from there.
 
-1. Install **[Blender](https://www.blender.org/download/) 4.2 or newer** (free; verified on
-   5.2.2). The app runs the conversion inside it and finds it by itself.
-2. Run the app. If Blender lacks the **VRM add-on**, the app offers to install it (from
-   extensions.blender.org, with your OK).
-3. Drop your export on the window. The app says at once what it is (Genesis 8.1 with FACS
-   morphs, CC with the ARKit profile, ...) and what, if anything, to change in Daz or CC.
-4. Choose **Web** (3–8 MB, for latentPresence and other web apps), **Desktop** or **Max**, and
-   convert. A Daz character takes 1–3 minutes.
+1. Run the app. Drop your export on the window. It says at once what it is (Genesis 8.1 with
+   FACS morphs, CC with the ARKit profile, ...) and what, if anything, to change in Daz or CC.
+2. Choose **Web** (3–8 MB, for latentPresence and other web apps), **Desktop** or **Max**, and
+   convert.
 
-VRMs are saved to `Documents\ccdz2vrm` unless you choose another folder.
+**Blender (reference)**, under Options → Converter, runs the original pipeline instead: the
+Blender Python in `src/blender/` that the built-in converter was ported from and is checked
+against. It needs **[Blender](https://www.blender.org/download/) 4.2 or newer** (verified on
+5.2.2); the app finds it, and offers to install the **VRM add-on** if it is missing. Slower; for
+comparing results.
 
-Building it from source (Node 22+, pnpm, Rust):
+Building from source (Node 22+, pnpm, Rust):
 
 ```powershell
 pnpm install
-pnpm app          # run it in development
+pnpm dev          # the page in a browser, converting (http://localhost:5174; ?fake plays a conversion back)
+pnpm build        # the static site in dist\
+pnpm app          # the desktop app in development
 pnpm app:build    # installer in src-tauri\target\release\bundle\nsis\
 pnpm gate         # typecheck, lint, tests, build, cargo fmt/clippy/test
 ```
 
-Why it drives your Blender rather than shipping one: the converter is ~3,000 lines of Blender
-Python that took a lot of measuring to get right (`docs/ENVIRONMENT.md`). A browser-only version
-is the next step; this one makes the converter usable now.
+How the built-in converter came about -- ported stage by stage and accepted against the Blender
+pipeline's output on five test exports -- is in [docs/BROWSER-PORT.md](docs/BROWSER-PORT.md).
 
-## Command line
+## Command line (the Blender reference pipeline)
 
-Everything the app does is also a few Blender commands, for scripting or other platforms. You
+Everything the reference mode does is also a few Blender commands, for scripting or other platforms. You
 need **Blender 4.2+** (verified on 5.2.2 LTS) with the **VRM add-on** (verified 4.7.1). No
 separate Python: every step runs in Blender's own (`glb_web.py` and `vrm_check.py` also run with
 a system Python that has numpy + Pillow).

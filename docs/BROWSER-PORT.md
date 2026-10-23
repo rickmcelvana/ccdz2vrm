@@ -157,7 +157,11 @@ ENVIRONMENT.md section for anything measured.
    it spikes), keyed decimation. Level 2 sizes + Level 3 visuals on every file.
 6. ✅ **Max tier** (2026-10-23, ENVIRONMENT §36): springs, constraints and geometry = Blender's; the twist split now runs after the export T-pose on both sides, so the rest mesh = the plain export. Original plan:
    **Max tier**: spring bones, twist split. Level 3 spring and twist measures.
-7. **Ship it**: the page's third `Backend` (worker + progress events), a static site build,
+7. ✅ **Ship it** (2026-10-23, ENVIRONMENT §37): `convert.ts` in a module worker; the static site
+   (`dist/`) converts in the browser; the desktop app converts built-in by default with Blender as
+   reference mode; the shipped path from each FBX = Blender's VRMs on 5 exports × 3 tiers (G8's
+   §34 residual aside). Original plan:
+   **Ship it**: the page's third `Backend` (worker + progress events), a static site build,
    the desktop app switched to the browser converter with Blender kept as "reference mode", and
    README/CLAUDE.md updated.
 

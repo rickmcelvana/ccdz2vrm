@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cleanName, defaultChoices, formatBytes, formatSeconds, outputFile, request } from './options';
+import { cleanName, defaultChoices, formatBytes, formatSeconds, outputFile, outputPath, request } from './options';
 import type { FbxInfo } from './types';
 
 const daz: FbxInfo = {
@@ -43,5 +43,14 @@ describe('options', () => {
     expect(formatBytes(2_048)).toBe('2 KB');
     expect(formatSeconds(83.8)).toBe('1 min 24 s');
     expect(formatSeconds(9.9)).toBe('10 s');
+  });
+});
+
+describe('outputPath', () => {
+  const c = { quality: 'web' as const, name: 'alice', springBones: true, twistSplit: false };
+  it("joins with the folder's own separator", () => {
+    expect(outputPath('D:\\Avatars\\', c)).toBe('D:\\Avatars\\alice.web.vrm');
+    expect(outputPath('/home/me/vrm', { ...c, quality: 'max' })).toBe('/home/me/vrm/alice.max.vrm');
+    expect(outputPath('', { ...c, quality: 'desktop' })).toBe('alice.vrm');
   });
 });

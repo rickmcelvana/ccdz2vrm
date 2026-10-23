@@ -1,4 +1,4 @@
-// Step 2: the export to convert -- dropped on the window or picked -- and what it is.
+// The export to convert -- dropped on the window or picked -- and what it is.
 
 import { useState, type DragEvent } from 'react';
 import type { Backend } from './backend';
@@ -6,6 +6,7 @@ import { formatBytes } from './options';
 import type { FbxInfo } from './types';
 
 type Props = {
+  step: number;
   backend: Backend;
   fbx: FbxInfo | null;
   error: string | null;
@@ -13,7 +14,7 @@ type Props = {
   onPicked: (f: FbxInfo | null, error?: string) => void;
 };
 
-export function CharacterCard({ backend, fbx, error, disabled, onPicked }: Props) {
+export function CharacterCard({ step, backend, fbx, error, disabled, onPicked }: Props) {
   const [hover, setHover] = useState(false);
 
   const pick = async () => {
@@ -34,7 +35,7 @@ export function CharacterCard({ backend, fbx, error, disabled, onPicked }: Props
   return (
     <section className="card">
       <h3 className="card-title">
-        <span className={`step ${fbx?.supported ? 'step-done' : ''}`}>{fbx?.supported ? '✓' : '2'}</span> Character
+        <span className={`step ${fbx?.supported ? 'step-done' : ''}`}>{fbx?.supported ? '✓' : step}</span> Character
       </h3>
       {fbx ? (
         <div className="fbx">
@@ -72,6 +73,7 @@ export function CharacterCard({ backend, fbx, error, disabled, onPicked }: Props
         >
           <span className="drop-title">Drop an .fbx here</span>
           <span className="muted">or click to choose one · Daz Studio (Genesis 3, 8, 8.1) or Character Creator 3+</span>
+          {backend.kind === 'browser' && <span className="muted small">Converted on this computer: the file is not uploaded.</span>}
         </button>
       )}
       {error && <p className="note note-stop">{error}</p>}

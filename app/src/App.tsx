@@ -9,7 +9,7 @@ import { ExportGuide } from './ExportGuide';
 import { explain } from './failures';
 import { defaultChoices, formatBytes, formatSeconds, request, type Choices } from './options';
 import { OptionsCard } from './OptionsCard';
-import { blenderReady, type BlenderStatus, type FbxInfo, type JobEvent, type Summary } from './types';
+import { blenderReady, type BlenderStatus, type Engine, type FbxInfo, type JobEvent, type Summary } from './types';
 import { Viewer } from './Viewer';
 
 type Job =
@@ -28,6 +28,18 @@ type Job =
     };
 
 const LOG_KEEP = 400;
+const ENGINE_KEY = 'ccdz2vrm.engine';
+
+/** The converter last chosen here, if this backend offers it (a per-viewer convenience). */
+function savedEngine(offered: readonly Engine[]): Engine {
+  try {
+    const e = localStorage.getItem(ENGINE_KEY) as Engine | null;
+    if (e && offered.includes(e)) return e;
+  } catch {
+    // storage blocked: the default
+  }
+  return offered[0] ?? 'builtin';
+}
 const WAITING = 'waiting';
 
 export function reduceJob(job: Job, ev: JobEvent): Job {
@@ -76,6 +88,7 @@ export function App() {
   const [vrm, setVrm] = useState<ArrayBuffer | null>(null);
   const [showLog, setShowLog] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const [engine, setEngine] = useState<Engine>('builtin');
 
   const running = job.phase === 'running';
   const progress = useRef<HTMLElement>(null);
@@ -91,6 +104,7 @@ export function App() {
     getBackend()
       .then(async (b) => {
         setBackend(b);
+        setEngine(savedEngine(b.engines));
         void b.blenderStatus().then(setBlender);
         void b.outDir().then(setOutDir);
         off.push(await b.onJob((ev) => setJob((j) => reduceJob(j, ev))));
@@ -136,12 +150,22 @@ export function App() {
   }
   if (!backend) return null;
 
-  const canConvert = blenderReady(blender) && !!fbx?.supported && !!choices?.name && !running;
+  const useBlender = engine === 'blender';
+  const ready = !useBlender || blenderReady(blender);
+  const canConvert = ready && !!fbx?.supported && !!choices?.name && !running;
+  const chooseEngine = (e: Engine) => {
+    setEngine(e);
+    try {
+      localStorage.setItem(ENGINE_KEY, e);
+    } catch {
+      // not remembered
+    }
+  };
   const convert = () => {
     if (!fbx || !choices) return;
     setVrm(null);
     setJob({ phase: 'idle' });
-    backend.convert(request(fbx, choices, outDir)).catch((e: unknown) =>
+    backend.convert(request(fbx, choices, outDir, engine)).catch((e: unknown) =>
       setJob({
         phase: 'failed',
         labels: [],
@@ -161,7 +185,7 @@ export function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <img className="topbar-mark" src="/icon.svg" alt="" />
+        <img className="topbar-mark" src={`${import.meta.env.BASE_URL}icon.svg`} alt="" />
         <div className="topbar-text">
           <h1 className="topbar-title">Daz &amp; Character Creator → VRM</h1>
           <span className="muted small">Turn your character into an avatar for latentPresence and other VRM apps</span>
@@ -170,11 +194,14 @@ export function App() {
 
       <main className="layout">
         <aside className="steps">
-          <BlenderCard backend={backend} status={blender} onStatus={setBlender} />
-          <CharacterCard backend={backend} fbx={fbx} error={fbxError} disabled={running} onPicked={picked} />
+          {useBlender && <BlenderCard backend={backend} status={blender} onStatus={setBlender} />}
+          <CharacterCard step={useBlender ? 2 : 1} backend={backend} fbx={fbx} error={fbxError} disabled={running} onPicked={picked} />
           {fbx?.supported && choices && (
             <OptionsCard
+              step={useBlender ? 3 : 2}
               backend={backend}
+              engine={engine}
+              onEngine={chooseEngine}
               fbx={fbx}
               choices={choices}
               outDir={outDir}
@@ -205,7 +232,7 @@ export function App() {
                   );
                 })}
               </ol>
-              {job.phase === 'running' && <p className="muted small">A Daz character takes 1–3 minutes.</p>}
+              {job.phase === 'running' && <p className="muted small">A Daz character takes {useBlender ? '1–3 minutes' : 'up to a minute or two'}.</p>}
               {job.phase === 'cancelled' && <p className="note note-tip">Cancelled.</p>}
               {advice && job.phase === 'failed' && (
                 <div className="note note-stop">
@@ -245,7 +272,7 @@ export function App() {
             )}
             {!running && !canConvert && (
               <p className="muted small center">
-                {!blenderReady(blender) ? 'Set up Blender first.' : !fbx ? 'Choose a character first.' : ''}
+                {!ready ? 'Set up Blender first.' : !fbx ? 'Choose a character first.' : ''}
               </p>
             )}
           </div>
@@ -268,7 +295,7 @@ export function App() {
                   </span>
                 </div>
                 <button type="button" className="btn" onClick={() => void backend.reveal(job.output ?? '')}>
-                  Show in folder
+                  {backend.saveLabel}
                 </button>
               </div>
               <Viewer data={vrm} />

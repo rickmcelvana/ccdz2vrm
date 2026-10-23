@@ -1,11 +1,14 @@
-// Step 3: how the VRM should come out.
+// How the VRM should come out, and (in the desktop app) which converter makes it.
 
 import type { Backend } from './backend';
-import { cleanName, outputFile, QUALITIES, twistAvailable, type Choices } from './options';
-import type { FbxInfo } from './types';
+import { cleanName, ENGINES, outputFile, QUALITIES, twistAvailable, type Choices } from './options';
+import type { Engine, FbxInfo } from './types';
 
 type Props = {
+  step: number;
   backend: Backend;
+  engine: Engine;
+  onEngine: (e: Engine) => void;
   fbx: FbxInfo;
   choices: Choices;
   outDir: string;
@@ -14,14 +17,14 @@ type Props = {
   onOutDir: (d: string) => void;
 };
 
-export function OptionsCard({ backend, fbx, choices, outDir, disabled, onChoices, onOutDir }: Props) {
+export function OptionsCard({ step, backend, engine, onEngine, fbx, choices, outDir, disabled, onChoices, onOutDir }: Props) {
   const set = (patch: Partial<Choices>) => onChoices({ ...choices, ...patch });
   const daz = twistAvailable(fbx);
 
   return (
     <section className="card">
       <h3 className="card-title">
-        <span className="step">3</span> Options
+        <span className="step">{step}</span> Options
       </h3>
 
       <div className="field">
@@ -74,6 +77,31 @@ export function OptionsCard({ backend, fbx, choices, outDir, disabled, onChoices
         </label>
       )}
 
+      {backend.engines.length > 1 && (
+        <div className="field">
+          <span className="field-label">Converter</span>
+          <div className="quality">
+            {ENGINES.filter((e) => backend.engines.includes(e.id)).map((e) => (
+              <button
+                key={e.id}
+                type="button"
+                disabled={disabled}
+                className={`quality-option ${engine === e.id ? 'quality-on' : ''}`}
+                onClick={() => onEngine(e.id)}
+              >
+                <span className="quality-label">{e.label}</span>
+              </button>
+            ))}
+          </div>
+          <p className="muted small">{ENGINES.find((e) => e.id === engine)?.blurb}</p>
+        </div>
+      )}
+
+      {outDir === '' ? (
+        <p className="muted small">
+          Saved as <code>{outputFile(choices)}</code> when you download it.
+        </p>
+      ) : (
       <div className="field">
         <span className="field-label">Save to</span>
         <div className="row row-nowrap">
@@ -93,6 +121,7 @@ export function OptionsCard({ backend, fbx, choices, outDir, disabled, onChoices
           As <code>{outputFile(choices)}</code>, replacing a file of that name.
         </p>
       </div>
+      )}
     </section>
   );
 }

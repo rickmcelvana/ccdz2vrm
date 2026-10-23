@@ -10,4 +10,6 @@ UFBX=v0.23.1
 "${ZIG:-zig}" cc -target wasm32-wasi -O2 -mexec-model=reactor -DUFBX_NO_STDIO \
   -Wl,--max-memory=4294901760 -Wl,--export=malloc -Wl,--export=free \
   -o ufbx_contract.wasm ufbx.c ufbx_contract.c
+# the converter ships this build (committed, so a site build needs no Zig)
+cp ufbx_contract.wasm ../../app/src/convert/ufbx_contract.wasm
 ls -la ufbx_contract.wasm

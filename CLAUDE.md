@@ -5,7 +5,10 @@ Daz 3D (Genesis 3/8/8.1) and Character Creator 3+ FBX exports → VRM 1.0 avatar
 `G:\_dev\image-to-vrm` on 2026-10-22 (copied, not moved; that repo still has the history of how
 every rule here was found).
 
-**Architecture: adapter → finisher.**
+**Architecture: adapter → finisher**, twice: the built-in converter (TypeScript + WASM,
+`app/src/convert/`, runs in the page -- the static site and the desktop app's default) and the
+Blender reference pipeline it was ported from and is judged against (`src/blender/`, the desktop
+app's "Blender (reference)" converter).
 
 ```
  adapt_daz.py / adapt_cc.py              vrm_export.py                  glb_web.py
@@ -25,15 +28,17 @@ face shape keys named **ARKit-52** and/or **Meta visemes**. Getting there is eac
 | CC3+ → VRM, ARKit 52 or Traditional profile | ✅ (§15, §24) |
 | Max tier: `--twist-split`, `--spring-bones`, `--max-texture 2048` | ✅ (§25, §29) |
 | Web tier + `vrm_check.py` / `check.html` validation | ✅ (§18) |
-| Desktop app (Tauri 2 + React, drives the user's Blender) | ✅ 2026-10-22: finds Blender + VRM add-on (offers to install it), reads the FBX in <1 s (family, face source, advice), Web/Desktop/Max, progress + Cancel, three-vrm preview; runner converts Alice end to end (`converts_a_real_export`) |
-| Browser-only (WASM) port | 📋 planned 2026-10-22 ([docs/BROWSER-PORT.md](docs/BROWSER-PORT.md)): TS core + ufbx WASM, accepted stage by stage against the Blender pipeline; Phase 0 ✅ (ufbx WASM = Blender's import, exact, on 6 exports; ENVIRONMENT §30), Phase 1 ✅ (TS import cleanup = Blender's, exact, 6 exports; §31), Phase 2 ✅ (TS CC adapter = Blender's within 0.04 mm, 2 exports; §32), Phase 3 ✅ (TS finisher: CC VRMs = Blender's as rendered, validators pass, 30 % smaller; §33), Phase 4 ✅ (TS Daz adapter = Blender's on G8.1 FACS / G8 / G3; whole chain = Blender's VRMs on 5 exports, one normal residual; §34), Phase 5 ✅ (TS web tier = Blender's web VRMs on 5 exports, hair reduction closer to the original surface; one vertex array per material fixed hair draw order; §35), Phase 6 ✅ (TS max tier = Blender's max VRMs; twist split moved after the T-pose in vrm_export.py too, rest mesh = plain export; §36), Phase 7 (ship) next |
+| Static site + desktop app with the built-in converter | ✅ 2026-10-23: `dist/` converts in the browser (worker, progress, cancel, download); the desktop app converts built-in by default, Blender as reference mode (ENVIRONMENT §37) |
+| Desktop app (Tauri 2 + React) driving the user's Blender (now "reference mode") | ✅ 2026-10-22: finds Blender + VRM add-on (offers to install it), reads the FBX in <1 s (family, face source, advice), Web/Desktop/Max, progress + Cancel, three-vrm preview; runner converts Alice end to end (`converts_a_real_export`) |
+| Browser-only (WASM) port | 📋 planned 2026-10-22 ([docs/BROWSER-PORT.md](docs/BROWSER-PORT.md)): TS core + ufbx WASM, accepted stage by stage against the Blender pipeline; Phase 0 ✅ (ufbx WASM = Blender's import, exact, on 6 exports; ENVIRONMENT §30), Phase 1 ✅ (TS import cleanup = Blender's, exact, 6 exports; §31), Phase 2 ✅ (TS CC adapter = Blender's within 0.04 mm, 2 exports; §32), Phase 3 ✅ (TS finisher: CC VRMs = Blender's as rendered, validators pass, 30 % smaller; §33), Phase 4 ✅ (TS Daz adapter = Blender's on G8.1 FACS / G8 / G3; whole chain = Blender's VRMs on 5 exports, one normal residual; §34), Phase 5 ✅ (TS web tier = Blender's web VRMs on 5 exports, hair reduction closer to the original surface; one vertex array per material fixed hair draw order; §35), Phase 6 ✅ (TS max tier = Blender's max VRMs; twist split moved after the T-pose in vrm_export.py too, rest mesh = plain export; §36), Phase 7 ✅ (shipped: worker + site + desktop default; the shipped path from each FBX = Blender's VRMs on 5 exports × 3 tiers; §37) |
 | Repo licence | ❓ not chosen; the `bpy` scripts are GPL-bound if distributed (docs/LICENSING.md) |
 
 ## Commands
 
 ```powershell
 pnpm install
-pnpm dev          # the page alone in a browser, fake backend (app/src/fakeBackend.ts): ?blender=missing|noaddon|old, ?fail=1
+pnpm dev          # the page in a browser, converting; ?fake plays one back (fakeBackend.ts: ?engine=blender, ?blender=missing|noaddon|old, ?fail=1)
+pnpm build        # the static site -> dist\ (also the desktop app's page)
 pnpm app          # the real app (tauri dev)
 pnpm app:build    # NSIS installer -> src-tauri\target\release\bundle\nsis\
 pnpm gate         # tsc, oxlint, vitest (theme coverage), vite build, cargo fmt/clippy/test
@@ -43,9 +48,14 @@ pnpm gate         # tsc, oxlint, vitest (theme coverage), vite build, cargo fmt/
 #   sh tools/port/make_web_refs.sh "ira|cc" ... ; sh tools/port/run_web.sh "ira|cc" "g8|daz"   (Phase 5: web tier;
 #     node tools/port/decimate_study.ts out/spike/g8 daz g8 measures the hair reduction alone)
 #   sh tools/port/run_clean.sh "alice|G:/.../genesis8.1AliceTest_01.fbx" ...   (Phase 1: TS cleanup vs Blender)
+#   sh tools/port/run_max.sh "alice|daz" ...   (Phase 6: max tier, refs from make_max_refs.sh)
+#   sh tools/port/run_e2e.sh "ira|cc|G:/_exports/CharacterCreator/Ira_01-cc3.Fbx" ...   (Phase 7: the shipped path from the FBX, 3 tiers)
+#   node tools/port/convert.ts <fbx> cc|daz <name> web|desktop|max   (one shipped conversion in Node)
+#   cd tools\validate; node site_e2e.mjs <fbx> <out.vrm> Web --name x   (the built site in Chromium; SITE_URL= for the dev server)
+#   cd tools\validate; node twist.mjs a.vrm ... ; node springs.mjs a.vrm ...   (twist roll radius, spring motion)
 # the real pipeline through the app's runner (needs Blender + VRM add-on):
 $env:CCDZ_TEST_FBX = "G:\_dev\image-to-vrm\imports\DAZ\genesis8.1AliceTest_01.fbx"; cargo test --manifest-path src-tauri\Cargo.toml -- --ignored --nocapture
-cd tools\validate; node shots_page.mjs <dir>     # page screenshots against `pnpm dev`
+cd tools\validate; node shots_page.mjs <dir>     # page screenshots against `pnpm dev` (fake backend)
 ```
 
 ```powershell
@@ -87,8 +97,9 @@ The viewer exposes `window.__viewer`, `window.vrm`, `setExpr({aa:1})`, `frame("f
 
 | Path | What |
 |---|---|
-| `app/` | The page (React 19 + three-vrm 3.5.5); `theme.css` is the only stylesheet |
-| `src-tauri/` | The Rust shell: `blender.rs` (find/check/install), `fbx.rs` (byte-scan inspection), `pipeline.rs` (plan + run + events) |
+| `app/` | The page (React 19 + three-vrm 3.5.5); `theme.css` is the only stylesheet; backends in `backend.ts` (Tauri), `browserBackend.ts`, `fakeBackend.ts`; `builtin.ts` runs the converter's worker |
+| `app/src/convert/` | The built-in converter: `convert.ts` (the whole run), `worker.ts`, `ufbx.ts` + `ufbx_contract.wasm`, `cleanup` → `adaptCc`/`adaptDaz` → `finish` (+ `decimate`, `springBones`, `twistSplit`, `glb`, `png`, `codecs`) |
+| `src-tauri/` | The Rust shell: file reads/writes for the built-in converter (`read_fbx`, `write_vrm`), `blender.rs` (find/check/install), `fbx.rs` (byte-scan inspection; `app/src/inspect.ts` is its browser port), `pipeline.rs` (the reference pipeline: plan + run + events) |
 | `src/blender/` | Adapters, finisher, twist split, spring bones, web tier, checks (bundled as `pipeline/`) |
 | `scripts/` | FBX probes for diagnosing an export before converting it |
 | `tools/viewer/` | three-vrm viewer + pass/fail check page |

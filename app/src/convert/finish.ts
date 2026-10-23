@@ -40,6 +40,8 @@ export type FinishOptions = {
   springBones?: boolean;
   /** Max tier, vrm_export.py --twist-split: Daz arm twist over bend + twist bones (twistSplit.ts). */
   twistSplit?: boolean;
+  /** Progress lines for the page's details pane. */
+  log?: (line: string) => void;
 };
 
 const WEB_NORMAL_PX = 512;
@@ -110,7 +112,9 @@ export async function finish(adapted: Contract, codec: ImageCodec, opts: FinishO
     for (const [i, m] of solid.entries()) {
       if (sourceCount(m) <= opts.maxMeshVerts) continue;
       const copy: Mesh = { ...m, morphs: m.morphs.map((k) => ({ ...k })) };
+      opts.log?.(`reducing ${m.name} (${sourceCount(m)} vertices)`);
       report.decimated[m.name] = await decimateMesh(copy, opts.maxMeshVerts);
+      opts.log?.(`  -> ${report.decimated[m.name]!.after} vertices`);
       solid[i] = copy;
     }
   }
@@ -128,6 +132,7 @@ export async function finish(adapted: Contract, codec: ImageCodec, opts: FinishO
 
   // --- the add-on's automatic T-pose (on export), baked as the rest pose -------------------------
   report.t_pose_deg = vrmTPose(new Pose(bones), humanBones, meshes);
+  opts.log?.(`T-pose: ${Object.keys(report.t_pose_deg).length} bones turned`);
 
   // --- max tier: the twist split, on the T-posed skeleton (vrm_export.py step 7c). Split first,
   // the T-pose would miss the bend bones (off the driver chain) and turn _pre by float noise on
@@ -181,6 +186,7 @@ export async function finish(adapted: Contract, codec: ImageCodec, opts: FinishO
   const gltfMat = new Map<string, { core: number; fringe: number | null }>();
   for (const name of used) {
     const mat = matByName.get(name) ?? { name, textures: [] };
+    opts.log?.(`material ${name}`);
     const { core, fringe, info } = await convertMaterial(mat, textures);
     report.materials[name] = info;
     g.materials.push(core);

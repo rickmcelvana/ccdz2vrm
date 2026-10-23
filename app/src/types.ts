@@ -25,7 +25,14 @@ export type FbxInfo = {
 
 export type Quality = 'web' | 'desktop' | 'max';
 
+/**
+ * Who converts: the built-in converter (TypeScript + WebAssembly, in the page) or the person's
+ * Blender running the reference pipeline (src/blender/).
+ */
+export type Engine = 'builtin' | 'blender';
+
 export type ConvertRequest = {
+  engine: Engine;
   fbx: string;
   kind: Kind;
   name: string;
