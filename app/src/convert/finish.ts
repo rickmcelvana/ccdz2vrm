@@ -129,12 +129,10 @@ export async function finish(adapted: Contract, codec: ImageCodec, opts: FinishO
   // --- the add-on's automatic T-pose (on export), baked as the rest pose -------------------------
   report.t_pose_deg = vrmTPose(new Pose(bones), humanBones, meshes);
 
-  // --- max tier: the twist split, on the T-posed skeleton. vrm_export.py splits first and lets
-  // the export T-pose run over the new bones: the bend bones (off the driver chain) then miss
-  // the pose, its _realign pins their skin where it was, and the zero-length _pre -> _drv step
-  // turns _pre by float noise (94 deg on Alice's right forearm, then turned back but for the
-  // roll) -- up to 1.45 mm off its own plain export (ENVIRONMENT s36). Split after the pose,
-  // the rest mesh is the plain export's, as the split intends.
+  // --- max tier: the twist split, on the T-posed skeleton (vrm_export.py step 7c). Split first,
+  // the T-pose would miss the bend bones (off the driver chain) and turn _pre by float noise on
+  // its zero-length step to _drv (ENVIRONMENT s36); after the pose the rest mesh is the plain
+  // export's, as the split intends.
   const twist = opts.twistSplit ? restructureTwist(bones, tableName) : null;
   if (opts.twistSplit && !twist) throw new Error(`twist split: no limb chains for bone table ${tableName}`);
   if (twist) {

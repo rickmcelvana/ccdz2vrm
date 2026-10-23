@@ -46,7 +46,8 @@ ap.add_argument("--spring-bones", action="store_true",
 args = ap.parse_args(argv)
 
 # Installed from extensions.blender.org (Blender 4.2+) or, older, as a legacy add-on.
-if not any(addon_utils.enable(m, default_set=True) for m in ("bl_ext.blender_org.vrm", "io_scene_vrm")):
+VRM_ADDON = next((m for m in ("bl_ext.blender_org.vrm", "io_scene_vrm") if addon_utils.enable(m, default_set=True)), None)
+if not VRM_ADDON:
     sys.exit("VRM add-on not found: install 'VRM format' from extensions.blender.org "
              "(blender --command extension install -s -e vrm)")
 
@@ -183,12 +184,9 @@ if args.spring_bones and table:
     from spring_bones import prepare  # noqa: E402
     spring_spec, report["spring_bones"] = prepare(armature, meshes, table)
 if args.twist_split:
-    from twist_split import restructure  # noqa: E402
-    twist_remap = restructure(armature, table_name)
-    if not twist_remap:
+    from twist_split import CHAINS  # noqa: E402
+    if table_name not in CHAINS:
         raise SystemExit(f"--twist-split: no limb chains for bone table {table_name}")
-    table = {**table, **twist_remap}
-    report["twist_split"] = twist_remap
 if table:
     hb = vrm1.humanoid.human_bones
     missing = []
@@ -553,6 +551,31 @@ if args.max_texture:
                 img.scale(max(1, int(img.size[0] * f)), max(1, int(img.size[1] * f)))
                 shrunk += 1
     report["textures_downscaled"] = shrunk
+
+# --- 7c. max tier: twist split, on the T-posed skeleton ------------------------
+# The split goes in after the add-on's T-pose, baked as the rest pose with the export's own
+# (4-influence) weights. Split first, the export T-pose ran over the new bones: the bend bones
+# (off the driver chain) missed the pose, _realign's rewritten bind then pinned their skin, and
+# the zero-length _pre -> _drv step turned _pre by float noise (94 deg on Alice's right forearm,
+# turned back but for the roll) -- up to 1.45 mm off the plain export (ENVIRONMENT s36). The
+# export then writes the rest pose as it is.
+if args.twist_split:
+    import importlib  # noqa: E402
+
+    from common import activate, apply_pose_as_rest  # noqa: E402
+    from twist_split import restructure  # noqa: E402
+    t_pose = importlib.import_module(f"{VRM_ADDON}.editor.t_pose")
+    activate(armature)
+    bpy.ops.object.mode_set(mode="POSE")
+    t_pose.set_estimated_humanoid_t_pose(bpy.context, armature)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    apply_pose_as_rest(armature, meshes, normals="skinned")
+    twist_remap = restructure(armature, table_name)
+    hb = vrm1.humanoid.human_bones
+    for vrm_name, bone in twist_remap.items():
+        getattr(hb, vrm_name).node.bone_name = bone
+    vrm1.humanoid.pose = vrm1.humanoid.POSE_REST_POSITION_POSE.identifier
+    report["twist_split"] = twist_remap
 
 # --- 8. export ---------------------------------------------------------------
 out = os.path.abspath(args.out)

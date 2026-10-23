@@ -174,9 +174,8 @@ const [refPath, newPath, ...flags] = process.argv.slice(2);
 // web tier: both sides zero morph deltas under 0.1 mm, so a vertex at that edge can differ by it
 const morphMm = flags.includes('--morph-mm') ? flags[flags.indexOf('--morph-mm') + 1]! : null;
 const original = flags.includes('--original') ? flags[flags.indexOf('--original') + 1]! : null;
-// max tier: the twist split must leave the rest mesh as the plain export has it, and Blender's
-// own split file misses that by float noise (ENVIRONMENT s36) -- so geometry is judged against
-// the plain file, bones by name and head only (the split re-hangs the arm bones by design)
+// max tier: the twist split must leave the rest mesh as the plain export has it -- geometry
+// against the plain file, bones by name and head only (the split re-hangs the arm bones)
 const geometryRef = flags.includes('--geometry') ? flags[flags.indexOf('--geometry') + 1]! : null;
 if (!refPath || !newPath) throw new Error('usage: node tools/compare/vrm.ts ref.vrm new.vrm');
 const A = readGlb(refPath), B = readGlb(newPath);

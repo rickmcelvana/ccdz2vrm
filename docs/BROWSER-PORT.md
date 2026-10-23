@@ -155,7 +155,7 @@ ENVIRONMENT.md section for anything measured.
    original surface than Blender's; no rung-dissolve port needed. Original plan:
    **Web tier**: `glb_web` port, hair-card reduction (meshoptimizer first, rung-dissolve port if
    it spikes), keyed decimation. Level 2 sizes + Level 3 visuals on every file.
-6. ✅ **Max tier** (2026-10-23, ENVIRONMENT §36): springs/constraints = Blender's; twist split after the T-pose, so the rest mesh = the plain export. Original plan:
+6. ✅ **Max tier** (2026-10-23, ENVIRONMENT §36): springs, constraints and geometry = Blender's; the twist split now runs after the export T-pose on both sides, so the rest mesh = the plain export. Original plan:
    **Max tier**: spring bones, twist split. Level 3 spring and twist measures.
 7. **Ship it**: the page's third `Backend` (worker + progress events), a static site build,
    the desktop app switched to the browser converter with Blender kept as "reference mode", and

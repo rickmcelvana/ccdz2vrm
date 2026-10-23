@@ -308,15 +308,53 @@ def aim_bone(rig, bone, child, direction):
     bpy.context.view_layer.update()
 
 
-def apply_pose_as_rest(rig, meshes):
+def _skinned_corner_normals(rig, o):
+    """Each corner normal turned by its vertex's blended bone matrix (current pose), renormalised:
+    the normals a runtime gives a mesh it skins into this pose. None if o has no armature."""
+    import numpy as np
+    if not any(m.type == "ARMATURE" and m.object == rig for m in o.modifiers):
+        return None
+    me = o.data
+    n = np.empty(len(me.loops) * 3)
+    me.corner_normals.foreach_get("vector", n)
+    n = n.reshape(-1, 3)
+    lv = np.empty(len(me.loops), np.int64)
+    me.loops.foreach_get("vertex_index", lv)
+    to_rig = rig.matrix_world.inverted() @ o.matrix_world
+    skin = {}
+    for pb in rig.pose.bones:
+        if pb.bone.use_deform:
+            m = to_rig.inverted() @ pb.matrix @ pb.bone.matrix_local.inverted() @ to_rig
+            skin[pb.name] = np.array(m.to_3x3())
+    gname = {g.index: g.name for g in o.vertex_groups}
+    lin = np.zeros((len(me.vertices), 3, 3))
+    total = np.zeros(len(me.vertices))
+    for v in me.vertices:
+        for g in v.groups:
+            s = skin.get(gname.get(g.group))
+            if s is not None and g.weight > 0:
+                lin[v.index] += g.weight * s
+                total[v.index] += g.weight
+    lin[total <= 0.0001] = np.eye(3)
+    out = np.einsum("lij,lj->li", lin[lv], n)
+    return out / np.maximum(np.linalg.norm(out, axis=1, keepdims=True), 1e-12)
+
+
+def apply_pose_as_rest(rig, meshes, normals="surface"):
     """Make the current pose the rest pose, keeping every shape key exact.
 
     Blender refuses to apply an armature modifier on a mesh with shape keys.
     Linear blend skinning is linear in the rest position, so evaluating the
     posed mesh once per key (that key at 1, all others at 0) gives the exact
     posed position of every key; write those back, then apply the armature.
+
+    `normals`: "surface" keeps Blender's custom normals, which follow the deformed surface (the
+    adapters' A -> T bake); "skinned" turns each with its vertex's bones, as the VRM add-on's
+    export T-pose leaves them -- baking that pose with surface normals put two-layer clothes
+    32-69 deg off the plain export (ENVIRONMENT s36).
     """
     dg_update = bpy.context.view_layer.update
+    skinned = {o.name: _skinned_corner_normals(rig, o) for o in meshes} if normals == "skinned" else {}
     for o in meshes:
         arm_mods = [m for m in o.modifiers if m.type == "ARMATURE" and m.object == rig]
         if not arm_mods:
@@ -359,6 +397,8 @@ def apply_pose_as_rest(rig, meshes):
         for m in o.modifiers:
             if m.type == "ARMATURE" and m.object == rig:
                 m.show_viewport = True
+        if skinned.get(o.name) is not None:
+            o.data.normals_split_custom_set([tuple(x) for x in skinned[o.name]])
     bpy.context.view_layer.update()
 
 
