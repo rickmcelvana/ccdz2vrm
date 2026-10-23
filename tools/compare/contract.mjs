@@ -6,17 +6,21 @@
 // Vertices are matched by position (+ uv), never by index: importers split and order
 // vertices differently. Bones by base name (Blender's `.001` duplicates folded) + nearest
 // head. Exit code 1 when a tolerance from the plan is broken.
+// --decimated '["mesh", ...]': these meshes are only reported (the web tier reduced them;
+// tools/compare/vrm.ts --original judges them against the unreduced surface).
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const [refPath, newPath, ...rest] = process.argv.slice(2);
 const jsonOut = rest.includes('--json') ? rest[rest.indexOf('--json') + 1] : null;
 const exact = rest.includes('--exact');
+const decimated = new Set(rest.includes('--decimated') ? JSON.parse(rest[rest.indexOf('--decimated') + 1]) : []);
+const morphMmArg = rest.includes('--morph-mm') ? Number(rest[rest.indexOf('--morph-mm') + 1]) : null;
 
 const TOL = {
   position_mm: 0.1, // rest vertex position, max
   bone_head_mm: 0.1,
   dominant_bone: 0.995, // share of matched vertices whose strongest bone agrees
-  morph_mm: 0.1, // or MORPH_REL of the key's largest delta
+  morph_mm: 0.1, // or MORPH_REL of the key's largest delta (--morph-mm overrides)
   morph_rel: 0.01,
   normal_deg_p99: 5,
 };
@@ -44,6 +48,7 @@ function quantile(arr, q) {
   return s[Math.min(s.length - 1, Math.floor(q * s.length))];
 }
 
+if (morphMmArg) TOL.morph_mm = morphMmArg;
 const A = load(refPath), B = load(newPath);
 const report = { reference: A.doc.source, candidate: B.doc.source, bones: {}, meshes: [], images: {}, failures: [] };
 const fail = (what) => report.failures.push(what);
@@ -148,6 +153,7 @@ for (const [i, j] of pairs) {
   if (j === null) { r.missing = true; fail(`mesh ${ma.name}: no counterpart`); continue; }
   const mb = B.doc.meshes[j];
   r.candidate = { name: mb.name, vertices: mb.vertex_count, triangles: mb.triangle_count, morphs: mb.morphs.length };
+  if (decimated.has(ma.name)) { r.decimated = true; continue; }
   const PA = A.f32(ma.position, ma.vertex_count * 3), PB = B.f32(mb.position, mb.vertex_count * 3);
   const UA = A.f32(ma.uv, ma.vertex_count * 2), UB = B.f32(mb.uv, mb.vertex_count * 2);
   const g = grid(PB, mb.vertex_count);
@@ -279,6 +285,7 @@ console.log(`${report.pass ? 'PASS' : 'FAIL'} ${report.candidate} vs ${report.re
 console.log(`  bones ${report.bones.matched}/${report.bones.reference} (candidate ${report.bones.candidate}); head mm ${JSON.stringify(report.bones.head_mm)}; axis deg ${JSON.stringify(report.bones.axis_deg)}`);
 for (const m of report.meshes) {
   if (m.missing) { console.log(`  ${m.name}: MISSING`); continue; }
+  if (m.decimated) { console.log(`  ${m.name}: decimated, verts ${m.vertices} vs ${m.candidate.vertices} (judged against the original)`); continue; }
   console.log(`  ${m.name}: verts ${m.vertices}/${m.candidate.vertices} matched ${m.matched}% pos ${JSON.stringify(m.position_mm)} uv-off ${m.uv_mismatch}%` +
     (m.normal_deg ? ` normal deg p99 ${m.normal_deg.p99} max ${m.normal_deg.max}` : '') +
     (m.skin ? ` skin-agree ${m.skin.dominant_agree}% l1p99 ${m.skin.l1_p99}` : '') +

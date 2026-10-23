@@ -150,7 +150,10 @@ ENVIRONMENT.md section for anything measured.
    except one documented normal residual (G8's top at the armpits). Original plan:
    **Daz adapter**: family check, overlays, FACS mix, bone-posed face, T-pose, noise drop.
    Level 1–3 on Alice, G8, G3.
-5. **Web tier**: `glb_web` port, hair-card reduction (meshoptimizer first, rung-dissolve port if
+5. ✅ **Web tier** (2026-10-23, ENVIRONMENT §35): web VRMs match Blender's on all five exports
+   (G8's §34 normal residual aside); hair reduced by meshoptimizer in measured rounds, closer to the
+   original surface than Blender's; no rung-dissolve port needed. Original plan:
+   **Web tier**: `glb_web` port, hair-card reduction (meshoptimizer first, rung-dissolve port if
    it spikes), keyed decimation. Level 2 sizes + Level 3 visuals on every file.
 6. **Max tier**: spring bones, twist split. Level 3 spring and twist measures.
 7. **Ship it**: the page's third `Backend` (worker + progress events), a static site build,
@@ -168,6 +171,7 @@ Phase 0 is the decision point. If neither parser gets the raw contract within to
   ufbx may have different quirks of its own (pre/post-rotation, geometric transforms, in-between
   blend shapes). Level 1 on raw imports catches both kinds.
 - **Hair cards.** The one algorithm without a library equivalent; Phase 5 may need the full port.
+  (Resolved in Phase 5: meshoptimizer plus surface-measured locking, §35.)
 - **Memory.** A 200 MB FBX, its parse, and dense morphs share one tab (WASM 4 GB address space).
   Measured in Phase 0. Phones are out of scope.
 - **Image formats.** Anything the browser cannot decode needs a decoder; Phase 1 lists what the

@@ -9,7 +9,122 @@ export type ImageCodec = {
   decode(bytes: Uint8Array): Promise<Pixels>;
   /** PNG keeps alpha; JPEG drops it. quality 0..1, JPEG only. */
   encode(px: Pixels, format: 'png' | 'jpeg', quality?: number): Promise<Uint8Array>;
+  /** zlib-wrapped deflate (PNG IDAT); the browser's CompressionStream('deflate') is this. */
+  deflate(bytes: Uint8Array): Promise<Uint8Array>;
 };
+
+/** A small deterministic PRNG (mulberry32): the same palette every run. */
+function rng(seed: number) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * glb_web.py `_quantize`: up to n palette entries, k-means on a 60k-pixel sample in
+ * premultiplied colour (a strand texture's invisible pixels must not take palette entries),
+ * then every pixel to its nearest entry; each entry is its pixels' mean straight RGBA.
+ */
+export function quantize(px: Pixels, n: number): { palette: Uint8Array; index: Uint8Array } {
+  const N = px.width * px.height, d = px.data;
+  const feat = new Float32Array(N * 4);
+  for (let i = 0; i < N; i++) {
+    const a = d[i * 4 + 3]! / 255;
+    feat.set([d[i * 4]! * a, d[i * 4 + 1]! * a, d[i * 4 + 2]! * a, d[i * 4 + 3]!], i * 4);
+  }
+  const nearest = (cen: Float32Array, k: number, i: number) => {
+    let best = 0, bd = Infinity;
+    for (let c = 0; c < k; c++) {
+      let s = 0;
+      for (let q = 0; q < 4; q++) {
+        const x = feat[i * 4 + q]! - cen[c * 4 + q]!;
+        s += x * x;
+      }
+      if (s < bd) {
+        bd = s;
+        best = c;
+      }
+    }
+    return best;
+  };
+  const r = rng(0);
+  const sample = Array.from({ length: Math.min(N, 60000) }, () => Math.floor(r() * N));
+  const k = Math.min(n, sample.length);
+  const cen = new Float32Array(k * 4);
+  for (let c = 0; c < k; c++) cen.set(feat.subarray(sample[c]! * 4, sample[c]! * 4 + 4), c * 4);
+  for (let iter = 0; iter < 10; iter++) {
+    const sums = new Float64Array(k * 4), cnt = new Uint32Array(k);
+    for (const i of sample) {
+      const c = nearest(cen, k, i);
+      cnt[c]!++;
+      for (let q = 0; q < 4; q++) sums[c * 4 + q]! += feat[i * 4 + q]!;
+    }
+    for (let c = 0; c < k; c++) if (cnt[c]) for (let q = 0; q < 4; q++) cen[c * 4 + q] = sums[c * 4 + q]! / cnt[c]!;
+  }
+  const index = new Uint8Array(N);
+  const sums = new Float64Array(k * 4), cnt = new Uint32Array(k);
+  for (let i = 0; i < N; i++) {
+    const c = nearest(cen, k, i);
+    index[i] = c;
+    cnt[c]!++;
+    for (let q = 0; q < 4; q++) sums[c * 4 + q]! += d[i * 4 + q]!;
+  }
+  const palette = new Uint8Array(k * 4);
+  for (let c = 0; c < k; c++) for (let q = 0; q < 4; q++) palette[c * 4 + q] = cnt[c] ? Math.round(sums[c * 4 + q]! / cnt[c]!) : 0;
+  return { palette, index };
+}
+
+const crcTable = Array.from({ length: 256 }, (_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+function crc32(b: Uint8Array): number {
+  let c = 0xffffffff;
+  for (const x of b) c = crcTable[(c ^ x) & 0xff]! ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type: string, body: Uint8Array): Uint8Array {
+  const out = new Uint8Array(12 + body.length);
+  const dv = new DataView(out.buffer);
+  dv.setUint32(0, body.length);
+  out.set([...type].map((c) => c.charCodeAt(0)), 4);
+  out.set(body, 8);
+  dv.setUint32(8 + body.length, crc32(out.subarray(4, 8 + body.length)));
+  return out;
+}
+
+/** A palette PNG with transparency (glb_web.py `_png`): filter 0 on every row. */
+export async function palettePng(px: Pixels, n: number, codec: ImageCodec): Promise<Uint8Array> {
+  const { palette, index } = quantize(px, n);
+  const w = px.width, h = px.height, k = palette.length / 4;
+  const rows = new Uint8Array(h * (w + 1));
+  for (let y = 0; y < h; y++) rows.set(index.subarray(y * w, y * w + w), y * (w + 1) + 1);
+  const ihdr = new Uint8Array(13);
+  new DataView(ihdr.buffer).setUint32(0, w);
+  new DataView(ihdr.buffer).setUint32(4, h);
+  ihdr.set([8, 3, 0, 0, 0], 8);
+  const plte = new Uint8Array(k * 3), trns = new Uint8Array(k);
+  for (let c = 0; c < k; c++) {
+    plte.set(palette.subarray(c * 4, c * 4 + 3), c * 3);
+    trns[c] = palette[c * 4 + 3]!;
+  }
+  const parts = [new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), pngChunk('IHDR', ihdr), pngChunk('PLTE', plte), pngChunk('tRNS', trns),
+    pngChunk('IDAT', await codec.deflate(rows)), pngChunk('IEND', new Uint8Array())];
+  const out = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
+  let o = 0;
+  for (const p of parts) {
+    out.set(p, o);
+    o += p.length;
+  }
+  return out;
+}
 
 /**
  * A PNG with only the chunks that draw it (IHDR, PLTE, tRNS, IDAT, IEND). glTF images are

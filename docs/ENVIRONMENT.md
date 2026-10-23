@@ -906,3 +906,70 @@ Found on the way, each measured:
   bump re-encoded as PNG had made G3's VRM 16 % bigger than Blender's).
 - `dump_contract.py` now recognises height-made normal maps by their own marks (packed, no
   file): after a .blend save the source height images are purged (no users left).
+
+## 35. Browser port, Phase 5: the web tier in TypeScript [V] — 2026-10-23
+
+`finish(…, { web: true, maxMeshVerts })` ports `glb_web.py` (1024 px maps, normal maps 512,
+JPEG 85 or a 32-colour palette PNG where texels are transparent, per-mesh skins with 8-bit
+joints, 8-bit weights, 16-bit UVs, morph deltas under 0.1 mm zeroed) and step 2c's mesh
+reduction (`app/src/convert/decimate.ts`). References: `tools/port/make_web_refs.sh` (Blender's
+`vrm_export --max-texture 1024 [--max-mesh-verts 50000]` + `glb_web.py`); comparison:
+`tools/port/run_web.sh`, i.e. `tools/compare/vrm.ts <blender.web> <ts.web> --morph-mm 0.15
+--original <blender.vrm>`.
+
+| | Ira | ALICE-00001a | Alice G8.1 | G8 | G3 |
+|---|---|---|---|---|---|
+| Size, Blender → ours | 7.8 → 6.7 MB | 7.1 → 6.4 | 6.3 → 6.5 | 13.8 → 15.6 | 5.8 → 6.4 |
+| Hair vertices (glTF), unreduced → Blender / ours | — | — | 121k → 45k / 48k | 384k → 100k / 143k | 135k → 41k / 50k |
+| Hair: original vertices' distance to the result, p99 / max mm, Blender / ours | — | — | 2.8/6.3 / 1.1/2.0 | 2.2/6.0 / 1.2/2.7 | 0.6/2.2 / 0.2/0.9 |
+| Finisher time in Node | 14 s | 13 s | 24 s | 97 s | 33 s |
+
+All five: 54 humanoid bones and 70 expressions identical to Blender's web file, every material
+the same, every texture no further from the unreduced one than Blender's, Khronos validator
+0 errors, three-vrm ok. G8 keeps its §34 normal residual (RRTop armpits); nothing new. G8's web
+file is over the 8 MB target on both sides: 13 meshes, and the web tier only reduces meshes over
+the budget.
+
+**Mesh reduction.** meshoptimizer 1.3.0 (MIT) `simplifyWithAttributes`, per material slot,
+vertices two slots share locked. It collapses a border vertex only along its border, so a hair
+card gets shorter rows, never a narrower ribbon, and it keeps original vertices, so shape keys
+carry over by identity (unit test; none of these five has a keyed mesh over the budget — the
+strand-brow case in image-to-vrm §28 would). Its error limit is not enough on its own: the error
+is an area-weighted quadric estimate, not a distance, and at 2.5 mm it removed whole curved
+cards (9 % of G8's hair vertices ended > 2.5 mm from the result, up to 28 mm) and opened holes
+in the scalp cap at the hairline. So it runs in rounds — simplify, then lock what strayed and
+simplify again until nothing does (G8: 8 rounds, 29 s):
+1. every original vertex against its own slot's reduced triangles (the strand layer over a
+   vanished cap is otherwise "within reach", `app/src/convert/surface.ts`);
+2. every reduced triangle's centre, by position and uv (uv 0.008 ≈ 2.5 mm, as the simplifier
+   weighs them), against its slot's original surface — this caught the last hairline hole: a
+   triangle stretched over the transparent part of the cap's texture.
+Measured alternatives on G8: uv in test 1 too → 163k vertices, 18.8 MB, no better to look at;
+tighter error limits alone (1, 0.5, 0.25 mm) → still 8.6 / 6.1 / 1 % of vertices beyond 2.5 mm.
+
+**Found on the way, each fixed and measured:**
+- **One vertex array per material**, as Blender's glTF exporter writes them (the blended fringe
+  shares its core's), cores first then fringes. three.js sorts blended primitives by their
+  geometry's bounding-sphere centre; with one array per mesh every primitive had the same
+  centre, so G8's scalp-cap fringe drew over the strands' and the hair looked flat — in the
+  desktop VRMs too since Phase 3. The geometry comparison can't see draw order; renders did.
+  Also keeps big meshes' indices 16-bit.
+- **JPEG encoder: mozjpeg** (`@jsquash/jpeg` 1.6.0, Apache-2.0, WASM; the browser build uses
+  the same) with JPEG's standard quantisation tables, as libjpeg/Blender. jpeg-js wrote 4:4:4
+  without optimised tables: ~1.8× Blender's bytes. mozjpeg's own default tables lost more on
+  noisy bump-made normal maps (G3 Cups 6.0/255 off the lossless image vs Blender's 4.1;
+  standard tables 4.6) for ~20 % fewer bytes. Desktop VRMs shrank with it: Alice 18.5 → 14.9
+  MB, G8 54.1 → 50.8, G3 32.4 → 30.3 (Blender's sizes first).
+- **Identical images stored once** (Alice's three hair maps are one PNG; Blender's
+  `glb_dedupe` did this).
+- **Joint 0 on a zero 8-bit weight** (validator ACCESSOR_JOINTS_USED_ZERO_WEIGHT, ~400 per
+  file before); the ≥ 256-joint path now remaps joints too.
+
+**Comparison changes** (`tools/compare/vrm.ts`): the read-back skeleton is every mesh-less node
+but an armature object, a Daz empty Blender writes with its scene properties, or a bare empty
+(per-mesh skins list only used joints); `--original` judges reduced meshes (either side under
+90 % of the unreduced count) by surface distance + "every vertex is an original one with its
+morphs", and textures against the unreduced file — two lossy encodings of a noisy map differ
+from each other more than either from the source (G3 BeadPlastic: Blender 23/255 off the
+lossless 512 px, ours 21, the two 14 apart); texture diffs are premultiplied (colour under a
+transparent texel is never seen).

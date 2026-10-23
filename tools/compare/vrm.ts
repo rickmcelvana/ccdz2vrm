@@ -5,6 +5,9 @@
 //    name -- and tools/compare/contract.mjs judges geometry, weights and morphs.
 // 2. Here: humanoid map, expressions (mesh, key, weight per expression), lookAt, first
 //    person, materials (alpha mode, factors, which textures) and texture pixels.
+// 3. --original <unreduced.vrm> (web tier): a mesh the two files reduced differently is judged
+//    against the unreduced one -- how far its vertices end up from the reduced surface, ours
+//    against Blender's -- and ours must keep original vertices with their original morphs.
 // Exit 1 when either part fails.
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -12,6 +15,8 @@ import { writeContract, type Contract, type Mesh } from '../../app/src/convert/c
 import { resize, type Pixels } from '../../app/src/convert/images.ts';
 import { mul, type Mat4 } from '../../app/src/convert/pose.ts';
 import { nodeCodec } from '../port/codec.ts';
+import { surfaceDistances } from '../../app/src/convert/surface.ts';
+import { DECIMATE_TOL } from '../../app/src/convert/decimate.ts';
 
 type Glb = { json: any; bin: Uint8Array };
 
@@ -74,11 +79,23 @@ function toContract(g: Glb, source: string): Contract {
     if (!world.has(i)) world.set(i, parent.has(i) ? mul(worldOf(parent.get(i)!), trs(nodes[i])) : trs(nodes[i]));
     return world.get(i)!;
   };
-  const skin = g.json.skins?.[0];
-  const joints: number[] = skin?.joints ?? [];
+  // the skeleton: every skin's joints, and every other mesh-less node but one holding meshes
+  // (Blender's armature object), an empty Blender wrote with its Daz properties (G8's necklace
+  // chains) or a bare one (the tear film's node once its mesh is dropped) -- the web tier's
+  // per-mesh skins list only the joints a mesh uses, so unskinned bones are in no skin
+  const joints: number[] = [];
+  for (const sk of g.json.skins ?? []) for (const j of sk.joints) if (!joints.includes(j)) joints.push(j);
+  nodes.forEach((n: any, i: number) => {
+    const holdsMesh = (n.children ?? []).some((c: number) => nodes[c].mesh !== undefined);
+    const bare = !n.children?.length && !n.translation && !n.rotation && !n.matrix;
+    if (n.mesh === undefined && !holdsMesh && !n.extras && !bare && !joints.includes(i)) joints.push(i);
+  });
   const jointSet = new Set(joints);
-  const ibm = skin ? read(g, skin.inverseBindMatrices) : new Float64Array();
-  const skinMat = joints.map((j, k) => mul(worldOf(j), ibm.slice(k * 16, k * 16 + 16)));
+  const boneOf = new Map(joints.map((j, k) => [j, k]));
+  const skinMats: Mat4[][] = (g.json.skins ?? []).map((sk: any) => {
+    const ibm = read(g, sk.inverseBindMatrices);
+    return sk.joints.map((j: number, k: number) => mul(worldOf(j), ibm.slice(k * 16, k * 16 + 16)));
+  });
   const bones = joints.map((j) => {
     let p = parent.get(j);
     while (p !== undefined && !jointSet.has(p)) p = parent.get(p);
@@ -87,6 +104,8 @@ function toContract(g: Glb, source: string): Contract {
   const meshes: Mesh[] = [];
   nodes.forEach((n: any, ni: number) => {
     if (n.mesh === undefined) return;
+    const skinMat: Mat4[] = n.skin !== undefined ? skinMats[n.skin]! : [];
+    const skinJoints: number[] = n.skin !== undefined ? g.json.skins[n.skin].joints : [];
     const gm = g.json.meshes[n.mesh];
     const names: string[] = gm.extras?.targetNames ?? [];
     const pos: number[] = [], uv: number[] = [], nrm: number[] = [], jn: number[] = [], wt: number[] = [], idx: number[] = [], tm: number[] = [];
@@ -127,7 +146,7 @@ function toContract(g: Glb, source: string): Contract {
           }
           uv.push(T[v * 2]!, 1 - T[v * 2 + 1]!);
           for (let k = 0; k < 8; k++) {
-            jn.push(J && k < 4 ? joints.indexOf(joints[J[v * 4 + k]!]!) : 0);
+            jn.push(J && k < 4 ? (boneOf.get(skinJoints[J[v * 4 + k]!]!) ?? 0) : 0);
             wt.push(W && k < 4 ? W[v * 4 + k]! : 0);
           }
           D.forEach((d: Float64Array, q: number) => deltas[q]!.push(...ap(d[v * 3]!, d[v * 3 + 1]!, d[v * 3 + 2]!, 0)));
@@ -148,9 +167,13 @@ function toContract(g: Glb, source: string): Contract {
 }
 
 // --- structure ------------------------------------------------------------------------------------
-const [refPath, newPath] = process.argv.slice(2);
+const [refPath, newPath, ...flags] = process.argv.slice(2);
+// web tier: both sides zero morph deltas under 0.1 mm, so a vertex at that edge can differ by it
+const morphMm = flags.includes('--morph-mm') ? flags[flags.indexOf('--morph-mm') + 1]! : null;
+const original = flags.includes('--original') ? flags[flags.indexOf('--original') + 1]! : null;
 if (!refPath || !newPath) throw new Error('usage: node tools/compare/vrm.ts ref.vrm new.vrm');
 const A = readGlb(refPath), B = readGlb(newPath);
+const O = original ? readGlb(original) : null;
 const fails: string[] = [];
 const lines: string[] = [];
 const va = A.json.extensions.VRMC_vrm, vb = B.json.extensions.VRMC_vrm;
@@ -203,13 +226,17 @@ function pixelDiff(a: Pixels, b: Pixels): { rgb: number; alpha: number } {
   const ra = resize(a, w, h), rb = resize(b, w, h);
   let rgb = 0, alpha = 0;
   for (let i = 0; i < w * h; i++) {
-    for (let c = 0; c < 3; c++) rgb += Math.abs(ra.data[i * 4 + c]! - rb.data[i * 4 + c]!);
+    // premultiplied: colour under a transparent texel is never seen (a palette PNG keeps any)
+    const aa = ra.data[i * 4 + 3]! / 255, ab = rb.data[i * 4 + 3]! / 255;
+    for (let c = 0; c < 3; c++) rgb += Math.abs(ra.data[i * 4 + c]! * aa - rb.data[i * 4 + c]! * ab);
     alpha += Math.abs(ra.data[i * 4 + 3]! - rb.data[i * 4 + 3]!);
   }
   return { rgb: rgb / (w * h * 3), alpha: alpha / (w * h) };
 }
 const matsB = new Map(B.json.materials.map((m: any) => [m.name, m]));
+const matsO = new Map((O?.json.materials ?? []).map((m: any) => [m.name, m]));
 let matOk = 0, worstRgb = 0, worstAlpha = 0, worstName = '';
+const lossy: string[] = []; // --original: textures further from the unreduced one than Blender's
 for (const ma of A.json.materials) {
   const mb: any = matsB.get(ma.name);
   if (!mb) { fails.push(`material ${ma.name} missing`); continue; }
@@ -225,10 +252,17 @@ for (const ma of A.json.materials) {
   if (!!pa.baseColorTexture !== !!pb.baseColorTexture) diffs.push('baseColorTexture presence');
   if (!!ma.normalTexture !== !!mb.normalTexture) diffs.push('normalTexture presence');
   if ((ma.normalTexture?.scale ?? 1) !== (mb.normalTexture?.scale ?? 1)) diffs.push('normal scale');
-  for (const [ta, tb] of [[pa.baseColorTexture, pb.baseColorTexture], [ma.normalTexture, mb.normalTexture]]) {
+  const mo: any = matsO.get(ma.name);
+  for (const [ta, tb, to] of [[pa.baseColorTexture, pb.baseColorTexture, mo?.pbrMetallicRoughness?.baseColorTexture], [ma.normalTexture, mb.normalTexture, mo?.normalTexture]]) {
     const xa = await texPixels(A, ta), xb = await texPixels(B, tb);
     if (!xa || !xb) continue;
     const d = pixelDiff(xa, xb);
+    const xo = O ? await texPixels(O, to) : null;
+    if (xo) {
+      const ea = pixelDiff(xo, xa), eb = pixelDiff(xo, xb);
+      if (eb.rgb > Math.max(ea.rgb + 1, 6) || eb.alpha > Math.max(ea.alpha + 1, 6))
+        lossy.push(`${ma.name} rgb ${eb.rgb.toFixed(2)} alpha ${eb.alpha.toFixed(2)} vs Blender's ${ea.rgb.toFixed(2)} / ${ea.alpha.toFixed(2)}`);
+    }
     if (d.rgb > worstRgb || d.alpha > worstAlpha) worstName = ma.name;
     worstRgb = Math.max(worstRgb, d.rgb);
     worstAlpha = Math.max(worstAlpha, d.alpha);
@@ -240,22 +274,96 @@ lines.push(`materials ${matOk}/${A.json.materials.length} same; texture pixels w
 // 6/255 mean: Blender's own JPEG re-encode alone differs ~2.5 from a lossless resize, and on a
 // noisy 4000 px bump map taken to 1024 (a non-integer factor) its scale filter and our box
 // filter differ by 4.7 before any encoding (tools/port/texdiff.ts, ENVIRONMENT.md s34)
-if (worstRgb > 6 || worstAlpha > 6) fails.push(`texture pixels differ by up to ${worstRgb.toFixed(2)} / ${worstAlpha.toFixed(2)}`);
+// web tier (--original): two lossy encodings of a noisy map differ from each other by more
+// than either does from the source (G3's bump-made normal map: Blender's JPEG 23/255 off the
+// lossless 512 px, ours 21, the two 14 apart), so each is judged against the unreduced texture:
+// no further from it than Blender's result (+1), or within 6
+if (O) {
+  lines.push(`textures against the unreduced file: ${lossy.length ? lossy.length + ' further than Blender' : 'none further than Blender'}`);
+  for (const l of lossy) fails.push(`texture ${l}`);
+} else if (worstRgb > 6 || worstAlpha > 6) fails.push(`texture pixels differ by up to ${worstRgb.toFixed(2)} / ${worstAlpha.toFixed(2)}`);
 
 const sa = readFileSync(refPath).byteLength, sb = readFileSync(newPath).byteLength;
 lines.push(`size ${(sa / 1e6).toFixed(1)} MB vs ${(sb / 1e6).toFixed(1)} MB`);
 if (sb > sa * 1.15) fails.push('candidate more than 15 % larger');
 
 // --- geometry through the contract comparison ----------------------------------------------------------
-for (const [g, p, tag] of [[A, refPath, 'ref'], [B, newPath, 'new']] as const) {
-  const { json, bin } = writeContract(toContract(g, tag));
+const contracts = { ref: toContract(A, 'ref'), new: toContract(B, 'new') };
+for (const [p, tag] of [[refPath, 'ref'], [newPath, 'new']] as const) {
+  const { json, bin } = writeContract(contracts[tag]);
   writeFileSync(`${p}.${tag}.json`, json);
   writeFileSync(`${p}.${tag}.bin`, bin);
+}
+// a mesh is "reduced" when either file kept under 90 % of the unreduced one's vertices (seam
+// splits and unused vertices move counts by a few per cent without any reduction)
+const reduced: string[] = [];
+if (original) {
+  const Oc = toContract(O!, 'original');
+  for (const mb of contracts.new.meshes) {
+    const ma = contracts.ref.meshes.find((m) => m.name === mb.name), mo = Oc.meshes.find((m) => m.name === mb.name);
+    if (!ma || !mo || Math.min(ma.vertex_count, mb.vertex_count) >= mo.vertex_count * 0.9) continue;
+    reduced.push(mb.name);
+    const q = (d: Float64Array, f: number) => +(Float64Array.from(d).sort()[Math.floor(f * (d.length - 1))]! * 1000).toFixed(2);
+    const da = surfaceDistances(mo.position, mo.vertex_count, ma.position, ma.indices);
+    const db = surfaceDistances(mo.position, mo.vertex_count, mb.position, mb.indices);
+    const sub = onOriginal(mb, mo);
+    lines.push(`reduced ${mb.name}: verts ${mo.vertex_count} -> Blender ${ma.vertex_count}, ours ${mb.vertex_count}; ` +
+      `original to surface mm p99/max Blender ${q(da, 0.99)}/${q(da, 1)}, ours ${q(db, 0.99)}/${q(db, 1)}; ` +
+      `ours on original vertices ${sub.on}/${mb.vertex_count}, morphs worst ${sub.worst}`);
+    // the reduction's own limit, or Blender's deviation where its result is coarser than that;
+    // vertex counts are not judged -- the budget is, and the file size above
+    if (q(db, 0.99) > Math.max(q(da, 0.99), DECIMATE_TOL * 1000)) fails.push(`${mb.name}: reduced surface strays ${q(db, 0.99)} mm (p99)`);
+    if (sub.on < mb.vertex_count) fails.push(`${mb.name}: ${mb.vertex_count - sub.on} vertices not on an original one`);
+    if (!sub.ok) fails.push(`${mb.name}: morphs differ from the original: ${sub.worst}`);
+  }
+}
+
+/**
+ * Each vertex of `m` against the original vertex at its spot (position + uv): how many sit on
+ * one, and whether their morph deltas match it as contract.mjs judges (0.1 mm or --morph-mm, or
+ * 1 % of the key's largest delta).
+ */
+function onOriginal(m: Mesh, o: Mesh): { on: number; ok: boolean; worst: string } {
+  const CELL = 0.0005, cells = new Map<string, number[]>();
+  const key = (x: number, y: number, z: number) => `${Math.floor(x / CELL)},${Math.floor(y / CELL)},${Math.floor(z / CELL)}`;
+  for (let v = 0; v < o.vertex_count; v++) {
+    const k = key(o.position[v * 3]!, o.position[v * 3 + 1]!, o.position[v * 3 + 2]!);
+    (cells.get(k) ?? cells.set(k, []).get(k)!).push(v);
+  }
+  const limit = Number(morphMm ?? 0.1) / 1000;
+  const keys = m.morphs.map((k) => {
+    const ko = o.morphs.find((x) => x.name === k.name);
+    let big = 0;
+    if (ko) for (let v = 0; v < o.vertex_count; v++) big = Math.max(big, Math.hypot(ko.delta[v * 3]!, ko.delta[v * 3 + 1]!, ko.delta[v * 3 + 2]!));
+    return { k, ko, tol: Math.max(limit, big * 0.01) };
+  });
+  let on = 0, ok = true, worst = 0, worstKey = '';
+  for (let v = 0; v < m.vertex_count; v++) {
+    const [x, y, z] = [m.position[v * 3]!, m.position[v * 3 + 1]!, m.position[v * 3 + 2]!];
+    let best = -1, bd = Infinity;
+    for (let dx = -1; dx <= 1; dx++)
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dz = -1; dz <= 1; dz++)
+          for (const w of cells.get(key(x + dx * CELL, y + dy * CELL, z + dz * CELL)) ?? []) {
+            const d = Math.hypot(o.position[w * 3]! - x, o.position[w * 3 + 1]! - y, o.position[w * 3 + 2]! - z) +
+              Math.hypot(o.uv[w * 2]! - m.uv[v * 2]!, o.uv[w * 2 + 1]! - m.uv[v * 2 + 1]!) * 0.01;
+            if (d < bd) { bd = d; best = w; }
+          }
+    if (best < 0 || bd > 0.0001) continue;
+    on++;
+    for (const { k, ko, tol } of keys) {
+      if (!ko) continue;
+      const e = Math.hypot(...[0, 1, 2].map((c) => k.delta[v * 3 + c]! - ko.delta[best * 3 + c]!));
+      if (e > tol) ok = false;
+      if (e > worst) [worst, worstKey] = [e, k.name];
+    }
+  }
+  return { on, ok, worst: worst ? `${worstKey} ${(worst * 1000).toFixed(3)} mm` : '0 mm' };
 }
 let geometry = '';
 let geometryOk = true;
 try {
-  geometry = execFileSync('node', ['tools/compare/contract.mjs', `${refPath}.ref`, `${newPath}.new`, '--exact'], { encoding: 'utf8' });
+  geometry = execFileSync('node', ['tools/compare/contract.mjs', `${refPath}.ref`, `${newPath}.new`, '--exact', ...(reduced.length ? ['--decimated', JSON.stringify(reduced)] : []), ...(morphMm ? ['--morph-mm', morphMm] : [])], { encoding: 'utf8' });
 } catch (e: any) {
   geometry = e.stdout ?? String(e);
   geometryOk = false;

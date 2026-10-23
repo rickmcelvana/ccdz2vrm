@@ -14,7 +14,8 @@
 
 import { MAXW, type Contract, type Material, type Mesh, type Pbr } from './contract.ts';
 import { GlbBuilder, type Json } from './glb.ts';
-import { heightToNormal, mimeOf, resize, stripPng, type ImageCodec, type Pixels } from './images.ts';
+import { heightToNormal, mimeOf, palettePng, resize, stripPng, type ImageCodec, type Pixels } from './images.ts';
+import { decimateMesh, sourceCount, type DecimateReport } from './decimate.ts';
 import { Pose } from './pose.ts';
 import { vrmTPose } from './vrmTPose.ts';
 import { ADDON_PRESETS, ARKIT_SHAPE_KEYS, BONE_TABLES, detectBoneTable, EYES, OVERRIDE_BLINK, PRESETS } from './vrmTables.ts';
@@ -25,7 +26,20 @@ export type FinishOptions = {
   /** Longest texture side; null keeps the source size (vrm_export.py --max-texture). */
   maxTexture?: number | null;
   jpegQuality?: number;
+  /**
+   * The web tier (glb_web.py, done while writing): normal maps 512 px, JPEG 85 or a 32-colour
+   * palette PNG for alpha, per-mesh skins with 8-bit joints, 8-bit weights, 16-bit UVs, morph
+   * deltas under 0.1 mm zeroed.
+   */
+  web?: boolean;
+  /** vrm_export.py --max-mesh-verts: reduce meshes with more source vertices (decimate.ts). */
+  maxMeshVerts?: number | null;
 };
+
+const WEB_NORMAL_PX = 512;
+const WEB_JPEG = 0.85;
+const WEB_PNG_COLORS = 32; // glb_web.py BPY_PNG_COLORS: the palette Blender's own pass writes
+const MORPH_EPS = 1e-4;
 
 export type FinishReport = {
   bone_table: string | null;
@@ -37,6 +51,7 @@ export type FinishReport = {
   influences: Record<string, { max_before: number; unweighted: number; skinned: boolean }>;
   materials: Record<string, { mode: string; clear_texels: number; soft_share: number; merged_opacity?: boolean }>;
   textures: { count: number; reencoded: number; bytes: number };
+  decimated: Record<string, DecimateReport>;
 };
 
 const SOFT_SHARE = 0.15;
@@ -52,6 +67,7 @@ export async function finish(adapted: Contract, codec: ImageCodec, opts: FinishO
   const report: FinishReport = {
     bone_table: null, humanoid_missing: [], shape_keys_pruned: 0, preset_binds: {}, look_at_offset: null, t_pose_deg: {}, influences: {}, materials: {},
     textures: { count: 0, reencoded: 0, bytes: 0 },
+    decimated: {},
   };
   const bones = adapted.bones.map((b) => ({ ...b, matrix: b.matrix.slice() }));
   const boneIndex = new Map(bones.map((b, i) => [b.name, i]));
@@ -76,6 +92,15 @@ export async function finish(adapted: Contract, codec: ImageCodec, opts: FinishO
   // a mesh with no faces left (Daz's tear film once its overlay triangles are gone) is not
   // exported: Blender's glTF exporter skips it, with its keys and expression binds
   const solid = adapted.meshes.filter((m) => m.triangle_count > 0);
+  // --- 2c. web tier: reduce heavy meshes (Daz hair; keyed strand brows keep their keys) --------
+  if (opts.maxMeshVerts) {
+    for (const [i, m] of solid.entries()) {
+      if (sourceCount(m) <= opts.maxMeshVerts) continue;
+      const copy: Mesh = { ...m, morphs: m.morphs.map((k) => ({ ...k })) };
+      report.decimated[m.name] = await decimateMesh(copy, opts.maxMeshVerts);
+      solid[i] = copy;
+    }
+  }
   const skin = solid.map((m) => limitWeights(m));
   const meshes: Mesh[] = solid.map((m, mi) => {
     const joints = new Uint16Array(m.vertex_count * MAXW), weights = new Float32Array(m.vertex_count * MAXW);
@@ -155,7 +180,7 @@ export async function finish(adapted: Contract, codec: ImageCodec, opts: FinishO
     if (p !== undefined) ((g.nodes[p]!.children ??= []) as number[]).push(i);
   });
   const anySkinned = skin.some((s) => s.report.skinned);
-  if (anySkinned) {
+  if (anySkinned && !opts.web) {
     const ibm = new Float32Array(bones.length * 16);
     bones.forEach((b, i) => {
       const h = head(b.name);
@@ -165,35 +190,90 @@ export async function finish(adapted: Contract, codec: ImageCodec, opts: FinishO
   }
   const meshNode: number[] = [];
   meshes.forEach((m, mi) => {
-    const attributes: Json = { POSITION: out.accessor(m.position, 'VEC3', { minmax: true }) };
-    if (m.normal) attributes.NORMAL = out.accessor(m.normal, 'VEC3');
+    // mesh-wide attribute data first; written below per material slot
     const uv = new Float32Array(m.uv.length);
     for (let v = 0; v < m.vertex_count; v++) {
       uv[v * 2] = m.uv[v * 2]!;
       uv[v * 2 + 1] = 1 - m.uv[v * 2 + 1]!; // FBX/Blender v runs up, glTF's down
     }
-    attributes.TEXCOORD_0 = out.accessor(uv, 'VEC2');
     const s = skin[mi]!;
-    if (s.report.skinned) {
-      attributes.JOINTS_0 = out.accessor(bones.length < 256 ? Uint8Array.from(s.joints) : s.joints, 'VEC4');
-      attributes.WEIGHTS_0 = out.accessor(s.weights, 'VEC4');
+    let skinIndex = 0;
+    let joints: Uint8Array | Uint16Array | null = null, weights: Uint8Array | Float32Array | null = null;
+    if (s.report.skinned && opts.web) {
+      // a skin of only the joints this mesh uses: 8-bit joints (glb_web.py compact_skins), and
+      // joint 0 wherever the 8-bit weight is 0 -- rounding zeroes some, and the Khronos validator
+      // flags a joint on a zero weight (ACCESSOR_JOINTS_USED_ZERO_WEIGHT)
+      const w8 = weightsU8(s.weights);
+      const usedJoints = [...new Set(Array.from(s.joints).filter((_, k) => w8[k]! > 0))].toSorted((a, b) => a - b);
+      const remap = new Map(usedJoints.map((j, k) => [j, k]));
+      const ibm = new Float32Array(usedJoints.length * 16);
+      usedJoints.forEach((j, k) => {
+        const h = head(bones[j]!.name);
+        ibm.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -h[0]!, -h[1]!, -h[2]!, 1], k * 16);
+      });
+      g.skins.push({ name: m.name, joints: usedJoints, inverseBindMatrices: out.accessor(ibm, 'MAT4') });
+      skinIndex = g.skins.length - 1;
+      const local = Uint16Array.from(s.joints, (j, k) => (w8[k]! > 0 ? remap.get(j)! : 0));
+      joints = usedJoints.length < 256 ? Uint8Array.from(local) : local;
+      weights = w8;
+    } else if (s.report.skinned) {
+      joints = bones.length < 256 ? Uint8Array.from(s.joints) : s.joints;
+      weights = s.weights;
     }
-    const targets = kept[mi]!.map((k) => ({ POSITION: out.sparseVec3(k.delta) }));
-    const primitives: Json[] = [];
+    const deltas = kept[mi]!.map((k) => {
+      if (!opts.web) return k.delta;
+      // glb_web.py: deltas under 0.1 mm zeroed (face targets nudge every vertex by micrometres)
+      const d = new Float32Array(k.delta);
+      for (let v = 0; v < m.vertex_count; v++) if (Math.hypot(d[v * 3]!, d[v * 3 + 1]!, d[v * 3 + 2]!) < MORPH_EPS) d.fill(0, v * 3, v * 3 + 3);
+      return d;
+    });
+    // one vertex array per material slot, as Blender's glTF exporter writes them (the blended
+    // fringe shares its core's): three.js sorts blended primitives by their geometry's bounding-
+    // sphere centre, and one array for the whole mesh gave every primitive the same centre --
+    // G8's scalp-cap fringe then drew over the strands' (ENVIRONMENT s35). It also keeps a big
+    // mesh's indices 16-bit. Cores first, then the fringes, in slot order, as Blender lists them.
+    const cores: Json[] = [], fringes: Json[] = [];
+    const tris: number[][] = m.materials.map(() => []);
+    for (let t = 0; t < m.triangle_count; t++) tris[m.triangle_material[t] ?? 0]!.push(t);
+    const local = new Int32Array(m.vertex_count);
     m.materials.forEach((name, slot) => {
-      const tris: number[] = [];
-      for (let t = 0; t < m.triangle_count; t++) if (m.triangle_material[t] === slot) tris.push(t);
-      if (!tris.length) return;
-      const idx = m.vertex_count < 65536 ? new Uint16Array(tris.length * 3) : new Uint32Array(tris.length * 3);
-      tris.forEach((t, k) => idx.set(m.indices.subarray(t * 3, t * 3 + 3), k * 3));
-      const indices = out.accessor(idx, 'SCALAR', { indices: true });
+      const list = tris[slot]!;
+      if (!list.length) return;
+      local.fill(-1);
+      const verts: number[] = [];
+      const corners = new Uint32Array(list.length * 3);
+      list.forEach((t, k) => {
+        for (let c = 0; c < 3; c++) {
+          const v = m.indices[t * 3 + c]!;
+          if (local[v] === -1) local[v] = verts.push(v) - 1;
+          corners[k * 3 + c] = local[v]!;
+        }
+      });
+      const pick = <T extends Float32Array | Uint16Array | Uint8Array>(a: T, k: number): T => {
+        const o = new (a.constructor as new (n: number) => T)(verts.length * k);
+        verts.forEach((v, i) => o.set(a.subarray(v * k, v * k + k), i * k));
+        return o;
+      };
+      const attributes: Json = { POSITION: out.accessor(pick(m.position, 3), 'VEC3', { minmax: true }) };
+      if (m.normal) attributes.NORMAL = out.accessor(pick(m.normal, 3), 'VEC3');
+      const st = pick(uv, 2);
+      attributes.TEXCOORD_0 = opts.web && st.every((x) => x >= 0 && x <= 1)
+        ? out.accessor(Uint16Array.from(st, (x) => Math.round(x * 65535)), 'VEC2', { normalized: true })
+        : out.accessor(st, 'VEC2');
+      if (joints && weights) {
+        attributes.JOINTS_0 = out.accessor(pick(joints, 4), 'VEC4');
+        attributes.WEIGHTS_0 = out.accessor(pick(weights, 4), 'VEC4', { normalized: weights instanceof Uint8Array });
+      }
+      const targets = deltas.map((d) => ({ POSITION: out.sparseVec3(pick(d, 3)) }));
+      const indices = out.accessor(verts.length < 65536 ? Uint16Array.from(corners) : corners, 'SCALAR', { indices: true });
       const mat = gltfMat.get(name)!;
       const prim = (material: number): Json => ({ attributes, indices, material, ...(targets.length ? { targets } : {}) });
-      primitives.push(prim(mat.core));
-      if (mat.fringe !== null) primitives.push(prim(mat.fringe)); // 7a: the same faces again, blended
+      cores.push(prim(mat.core));
+      if (mat.fringe !== null) fringes.push(prim(mat.fringe)); // 7a: the same faces again, blended
     });
-    g.meshes.push({ name: m.name, primitives, ...(targets.length ? { extras: { targetNames: kept[mi]!.map((k) => k.name) } } : {}) });
-    g.nodes.push({ name: m.name, mesh: g.meshes.length - 1, ...(s.report.skinned ? { skin: 0 } : {}) });
+    const primitives = [...cores, ...fringes];
+    g.meshes.push({ name: m.name, primitives, ...(deltas.length ? { extras: { targetNames: kept[mi]!.map((k) => k.name) } } : {}) });
+    g.nodes.push({ name: m.name, mesh: g.meshes.length - 1, ...(s.report.skinned ? { skin: skinIndex } : {}) });
     meshNode.push(g.nodes.length - 1);
     (g.scenes[0]!.nodes as number[]).push(g.nodes.length - 1);
   });
@@ -234,6 +314,23 @@ export async function finish(adapted: Contract, codec: ImageCodec, opts: FinishO
     },
   };
   return { vrm: out.build(), report };
+}
+
+/** glb_web.py weights_u8: normalised 8-bit weights summing to exactly 255 (largest remainders up). */
+function weightsU8(w: Float32Array): Uint8Array {
+  const out = new Uint8Array(w.length);
+  for (let v = 0; v < w.length / 4; v++) {
+    const row = [0, 1, 2, 3].map((k) => w[v * 4 + k]!);
+    const s = row.reduce((a, b) => a + b, 0);
+    if (!s) continue;
+    const scaled = row.map((x) => (x / s) * 255);
+    const q = scaled.map(Math.floor);
+    let short = 255 - q.reduce((a, b) => a + b, 0);
+    const order = [0, 1, 2, 3].toSorted((a, b) => (scaled[b]! - q[b]!) - (scaled[a]! - q[a]!));
+    for (const k of order) if (short-- > 0) q[k]!++;
+    q.forEach((x, k) => (out[v * 4 + k] = x));
+  }
+  return out;
 }
 
 /** vertex_group_limit_total(limit=4) + vertex_group_normalize_all: the 4 heaviest, summing to 1. */
@@ -304,8 +401,8 @@ class TextureCache {
     return this.decoded.get(fnv)!;
   }
 
-  private budget(px: Pixels): Pixels {
-    const max = this.opts.maxTexture;
+  private budget(px: Pixels, normal = false): Pixels {
+    const max = this.opts.web && normal ? Math.min(this.opts.maxTexture ?? WEB_NORMAL_PX, WEB_NORMAL_PX) : this.opts.maxTexture;
     if (!max || Math.max(px.width, px.height) <= max) return px;
     const f = max / Math.max(px.width, px.height);
     return resize(px, Math.max(1, Math.trunc(px.width * f)), Math.max(1, Math.trunc(px.height * f)));
@@ -319,7 +416,9 @@ class TextureCache {
     const px = await this.pixels(fnv);
     const max = this.opts.maxTexture;
     let tex: number;
-    if (!max || Math.max(px.width, px.height) <= max) {
+    if (this.opts.web) {
+      tex = await this.webEncode(this.budget(px, normal), name, raw);
+    } else if (!max || Math.max(px.width, px.height) <= max) {
       tex = this.add(stripPng(raw), mimeOf(raw) ?? 'image/png', name);
     } else {
       // a resized map keeps its source's format: a JPEG bump stays JPEG (it was lossy already;
@@ -331,9 +430,31 @@ class TextureCache {
   }
 
   /** A texture made here (merged opacity, normal from height), budgeted. */
-  async generated(key: string, px: Pixels, name: string, png: boolean): Promise<number> {
-    if (!this.written.has(key)) this.written.set(key, await this.encode(this.budget(px), name, png));
+  async generated(key: string, px: Pixels, name: string, png: boolean, normal = false): Promise<number> {
+    if (!this.written.has(key)) {
+      const b = this.budget(px, normal);
+      this.written.set(key, this.opts.web ? await this.webEncode(b, name, null) : await this.encode(b, name, png));
+    }
     return this.written.get(key)!;
+  }
+
+  /**
+   * glb_web.py shrink_textures: a 32-colour palette PNG when any texel is clearly transparent,
+   * else JPEG 85; the source itself when that is smaller (it was already small).
+   */
+  private async webEncode(px: Pixels, name: string, raw: Uint8Array | null): Promise<number> {
+    let alpha = false;
+    for (let i = 3; i < px.data.length && !alpha; i += 4) alpha = px.data[i]! < 250;
+    const bytes = alpha ? await palettePng(px, WEB_PNG_COLORS, this.codec) : await this.codec.encode(px, 'jpeg', WEB_JPEG);
+    this.report.textures.reencoded++;
+    if (raw && px === (await this.pixels(this.fnvOf(raw))) && raw.byteLength <= bytes.byteLength) {
+      return this.add(stripPng(raw), mimeOf(raw) ?? 'image/png', name);
+    }
+    return this.add(bytes, alpha ? 'image/png' : 'image/jpeg', name);
+  }
+
+  private fnvOf(raw: Uint8Array): string {
+    return this.c.images.find((i) => i.data === raw)?.fnv ?? '';
   }
 
   private async encode(px: Pixels, name: string, png: boolean): Promise<number> {
@@ -415,7 +536,7 @@ async function convertMaterial(mat: Material, tx: TextureCache) {
   core.pbrMetallicRoughness = pmr;
   if (pbr.normal_tex) {
     const index = pbr.normal_from_height
-      ? await tx.generated(`nrm:${pbr.normal_tex}`, heightToNormal(await tx.pixels(pbr.normal_tex)), `${mat.name}_normal`, true)
+      ? await tx.generated(`nrm:${pbr.normal_tex}`, heightToNormal(await tx.pixels(pbr.normal_tex)), `${mat.name}_normal`, true, true)
       : await tx.source(pbr.normal_tex, `${mat.name}_normal`, false, true);
     core.normalTexture = pbr.normal_strength !== null && pbr.normal_strength !== 1 ? { index, scale: pbr.normal_strength } : { index };
   }

@@ -32,6 +32,7 @@ export class GlbBuilder {
   };
   private chunks: Uint8Array[] = [];
   private size = 0;
+  private imageViews = new Map<string, number>(); // content -> view: identical images stored once
 
   constructor(generator: string) {
     this.gltf = {
@@ -59,7 +60,11 @@ export class GlbBuilder {
   }
 
   /** An accessor over `data`; min/max written for VEC3 positions (the spec requires them). */
-  accessor(data: TypedArray, type: 'SCALAR' | 'VEC2' | 'VEC3' | 'VEC4' | 'MAT4', opts: { indices?: boolean; minmax?: boolean } = {}): number {
+  accessor(
+    data: TypedArray,
+    type: 'SCALAR' | 'VEC2' | 'VEC3' | 'VEC4' | 'MAT4',
+    opts: { indices?: boolean; minmax?: boolean; normalized?: boolean } = {},
+  ): number {
     const comps = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4, MAT4: 16 }[type];
     const acc: Json = {
       bufferView: this.view(this.bytes(data), type === 'MAT4' ? undefined : opts.indices ? ELEMENT_ARRAY_BUFFER : ARRAY_BUFFER),
@@ -68,6 +73,7 @@ export class GlbBuilder {
       type,
     };
     if (opts.minmax) Object.assign(acc, minMax(data, comps));
+    if (opts.normalized) acc.normalized = true;
     this.gltf.accessors.push(acc);
     return this.gltf.accessors.length - 1;
   }
@@ -98,7 +104,10 @@ export class GlbBuilder {
   }
 
   image(bytes: Uint8Array, mimeType: string, name: string): number {
-    this.gltf.images.push({ bufferView: this.view(bytes), mimeType, name });
+    const key = `${bytes.byteLength}:${fnv1a(bytes)}`;
+    let view = this.imageViews.get(key);
+    if (view === undefined) this.imageViews.set(key, (view = this.view(bytes)));
+    this.gltf.images.push({ bufferView: view, mimeType, name });
     return this.gltf.images.length - 1;
   }
 
@@ -134,6 +143,12 @@ export class GlbBuilder {
     }
     return out;
   }
+}
+
+function fnv1a(b: Uint8Array): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < b.length; i++) h = Math.imul(h ^ b[i]!, 0x01000193);
+  return h >>> 0;
 }
 
 function minMax(data: TypedArray, comps: number): { min: number[]; max: number[] } {

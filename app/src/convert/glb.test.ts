@@ -22,6 +22,16 @@ describe('GlbBuilder', () => {
     expect(json.bufferViews[1].target).toBe(34963);
   });
 
+  it('stores byte-identical images once', () => {
+    const b = new GlbBuilder('test');
+    b.image(new Uint8Array([1, 2, 3, 4]), 'image/png', 'scalp');
+    b.image(new Uint8Array([1, 2, 3, 4]), 'image/png', 'hair1');
+    b.image(new Uint8Array([1, 2, 3, 5]), 'image/png', 'hair2');
+    const { json } = parse(b.build());
+    expect(json.images.map((i: { bufferView: number }) => i.bufferView)).toEqual([0, 0, 1]);
+    expect(json.images[1].name).toBe('hair1');
+  });
+
   it('stores mostly-zero morph deltas sparsely, with min/max over the whole array', () => {
     const b = new GlbBuilder('test');
     const d = new Float32Array(300 * 3);
