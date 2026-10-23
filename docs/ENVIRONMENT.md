@@ -1070,9 +1070,8 @@ needs no Zig.
 - The installer is 3.4 MB.
 - The built-in engine's Rust side (`read_fbx`, `write_vrm`, `percent_decode` + test) is
   compiled and clippy-clean.
-- **[R]** The app's built-in conversion has not been clicked through in the packaged app here:
-  the page and worker are verified in Chromium (which WebView2 is), and the Rust commands only
-  by compiling and the decoder's unit test.
+- **[V]** The packaged app's built-in conversion (2026-10-23, by the user, after the §38 fix):
+  `alice_genesis8.1_03.fbx` converted at Web, Desktop and Max from the installed app.
 
 ## 38. Built-in converter: "no mesh skinned to the face bones" on a big FACS export [V] — 2026-10-23
 
