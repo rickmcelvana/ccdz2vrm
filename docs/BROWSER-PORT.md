@@ -139,7 +139,11 @@ ENVIRONMENT.md section for anything measured.
    both CC exports. Original plan:
    **CC adapter** (smallest): renames, Traditional mix, visemes, T-pose, jaw bake. Level 1 on Ira
    + the Traditional export.
-3. **Finisher and VRM writer**: humanoid, expressions, prune, lookAt, first person, ≤4 weights,
+3. ✅ **Finisher and VRM writer** (2026-10-23, ENVIRONMENT §33): `finish.ts` VRMs match Blender's
+   on both CC exports (geometry ≤ 0.04 mm as rendered, all expressions, materials, textures),
+   pass the validators, and are 30 % smaller. The writer is our own (`glb.ts`), not glTF-Transform:
+   VRMC_vrm references nodes and meshes by index, simpler to own. Original plan:
+   **Finisher and VRM writer**: humanoid, expressions, prune, lookAt, first person, ≤4 weights,
    materials and soft strands, texture budget. Level 2 + 3 on the CC exports (Desktop tier).
 4. **Daz adapter**: family check, overlays, FACS mix, bone-posed face, T-pose, noise drop.
    Level 1–3 on Alice, G8, G3.

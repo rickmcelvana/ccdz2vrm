@@ -26,7 +26,7 @@ face shape keys named **ARKit-52** and/or **Meta visemes**. Getting there is eac
 | Max tier: `--twist-split`, `--spring-bones`, `--max-texture 2048` | ✅ (§25, §29) |
 | Web tier + `vrm_check.py` / `check.html` validation | ✅ (§18) |
 | Desktop app (Tauri 2 + React, drives the user's Blender) | ✅ 2026-10-22: finds Blender + VRM add-on (offers to install it), reads the FBX in <1 s (family, face source, advice), Web/Desktop/Max, progress + Cancel, three-vrm preview; runner converts Alice end to end (`converts_a_real_export`) |
-| Browser-only (WASM) port | 📋 planned 2026-10-22 ([docs/BROWSER-PORT.md](docs/BROWSER-PORT.md)): TS core + ufbx WASM, accepted stage by stage against the Blender pipeline; Phase 0 ✅ (ufbx WASM = Blender's import, exact, on 6 exports; ENVIRONMENT §30), Phase 1 ✅ (TS import cleanup = Blender's, exact, 6 exports; §31), Phase 2 ✅ (TS CC adapter = Blender's within 0.04 mm, 2 exports; §32), Phase 3 (finisher + VRM writer) next |
+| Browser-only (WASM) port | 📋 planned 2026-10-22 ([docs/BROWSER-PORT.md](docs/BROWSER-PORT.md)): TS core + ufbx WASM, accepted stage by stage against the Blender pipeline; Phase 0 ✅ (ufbx WASM = Blender's import, exact, on 6 exports; ENVIRONMENT §30), Phase 1 ✅ (TS import cleanup = Blender's, exact, 6 exports; §31), Phase 2 ✅ (TS CC adapter = Blender's within 0.04 mm, 2 exports; §32), Phase 3 ✅ (TS finisher: CC VRMs = Blender's as rendered, validators pass, 30 % smaller; §33), Phase 4 (Daz adapter) next |
 | Repo licence | ❓ not chosen; the `bpy` scripts are GPL-bound if distributed (docs/LICENSING.md) |
 
 ## Commands
@@ -39,6 +39,7 @@ pnpm app:build    # NSIS installer -> src-tauri\target\release\bundle\nsis\
 pnpm gate         # tsc, oxlint, vitest (theme coverage), vite build, cargo fmt/clippy/test
 # browser port harness (hard time limits throughout; results in out/spike, gitignored):
 #   sh tools/port/run_adapt.sh cc "ira|G:/_exports/CharacterCreator/Ira_01-cc3.Fbx"   (Phase 2: TS CC adapter vs Blender's)
+#   sh tools/port/run_finish.sh cc "ira|..."   (Phase 3: TS VRM vs Blender's VRM, tools/compare/vrm.ts)
 #   sh tools/port/run_clean.sh "alice|G:/.../genesis8.1AliceTest_01.fbx" ...   (Phase 1: TS cleanup vs Blender)
 # the real pipeline through the app's runner (needs Blender + VRM add-on):
 $env:CCDZ_TEST_FBX = "G:\_dev\image-to-vrm\imports\DAZ\genesis8.1AliceTest_01.fbx"; cargo test --manifest-path src-tauri\Cargo.toml -- --ignored --nocapture

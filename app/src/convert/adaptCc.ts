@@ -92,6 +92,7 @@ function dropTriangles(m: Mesh, dead: (t: number) => boolean): number {
   };
   m.position = pick(m.position, 3);
   m.uv = pick(m.uv, 2);
+  if (m.normal) m.normal = pick(m.normal, 3);
   if (m.vertex) m.vertex = pick(m.vertex, 1);
   m.joints = pick(m.joints, MAXW);
   m.weights = pick(m.weights, MAXW);

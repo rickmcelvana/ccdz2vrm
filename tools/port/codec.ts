@@ -16,4 +16,13 @@ export const nodeCodec: ImageCodec = {
     }
     throw new Error('unsupported image format');
   },
+  async encode(px, format, quality = 0.9) {
+    const data = Buffer.from(px.data.buffer, px.data.byteOffset, px.data.byteLength);
+    if (format === 'jpeg') {
+      return new Uint8Array(jpeg.encode({ width: px.width, height: px.height, data }, Math.round(quality * 100)).data);
+    }
+    const png = new PNG({ width: px.width, height: px.height });
+    data.copy(png.data);
+    return new Uint8Array(PNG.sync.write(png));
+  },
 };

@@ -84,14 +84,18 @@ static void jmat(ufbx_matrix m) {
 }
 
 // --- split-vertex hash: (position index, uv index) -> split id ---------------------------
-typedef struct { uint64_t key; uint32_t id; } slot;
+// split per (position, uv, normal value): a glTF vertex is one of each. By normal VALUE, not
+// index: FBX gives every polygon corner its own normal index, and splitting by index nearly
+// doubled the vertices of smooth meshes (ENVIRONMENT.md s33).
+typedef struct { uint64_t key; uint32_t n[3]; uint32_t id; } slot;
 static slot *H;
 static size_t HCAP;
-static uint32_t hget(uint64_t key, uint32_t next, int *fresh) {
-	size_t i = (size_t)(key * 0x9E3779B97F4A7C15ull) & (HCAP - 1);
+static uint32_t hget(uint64_t key, const uint32_t n[3], uint32_t next, int *fresh) {
+	uint64_t h = key ^ ((uint64_t)n[0] * 0xC2B2AE3D27D4EB4Full) ^ ((uint64_t)n[1] * 0x165667B19E3779F9ull) ^ ((uint64_t)n[2] * 0x27D4EB2F165667C5ull);
+	size_t i = (size_t)(h * 0x9E3779B97F4A7C15ull) & (HCAP - 1);
 	for (;;) {
-		if (H[i].key == UINT64_MAX) { H[i].key = key; H[i].id = next; *fresh = 1; return next; }
-		if (H[i].key == key) { *fresh = 0; return H[i].id; }
+		if (H[i].key == UINT64_MAX) { H[i].key = key; memcpy(H[i].n, n, 12); H[i].id = next; *fresh = 1; return next; }
+		if (H[i].key == key && !memcmp(H[i].n, n, 12)) { *fresh = 0; return H[i].id; }
 		i = (i + 1) & (HCAP - 1);
 	}
 }
@@ -151,17 +155,27 @@ static void write_mesh(ufbx_scene *s, ufbx_node *node, uint32_t *bone_of_node, i
 		uint32_t pv = m->vertex_indices.data[i];
 		uint32_t uv = m->vertex_uv.exists ? m->vertex_uv.indices.data[i] : 0;
 		int fresh;
-		uint32_t id = hget(((uint64_t)pv << 32) | uv, nsplit, &fresh);
+		uint32_t nb[3] = {0, 0, 0};
+		if (m->vertex_normal.exists) {
+			ufbx_vec3 nn = ufbx_get_vertex_vec3(&m->vertex_normal, i);
+			float f[3] = {(float)nn.x, (float)nn.y, (float)nn.z};
+			memcpy(nb, f, 12);
+		}
+		uint32_t id = hget(((uint64_t)pv << 32) | uv, nb, nsplit, &fresh);
 		if (fresh) { pos_of_split[nsplit] = pv; idx_of_split[nsplit] = (uint32_t)i; nsplit++; }
 		split_of_index[i] = id;
 	}
 
-	float *P = malloc(nsplit * 12), *UV = malloc(nsplit * 8);
+	float *P = malloc(nsplit * 12), *UV = malloc(nsplit * 8), *N = malloc(nsplit * 12);
+	ufbx_matrix nrm = ufbx_matrix_for_normals(&g2w);
 	for (uint32_t v = 0; v < nsplit; v++) {
 		ufbx_vec3 p = ufbx_transform_position(&g2w, m->vertices.data[pos_of_split[v]]);
 		P[v * 3] = (float)p.x; P[v * 3 + 1] = (float)p.y; P[v * 3 + 2] = (float)p.z;
 		ufbx_vec2 t = m->vertex_uv.exists ? ufbx_get_vertex_vec2(&m->vertex_uv, idx_of_split[v]) : (ufbx_vec2){0, 0};
 		UV[v * 2] = (float)t.x; UV[v * 2 + 1] = (float)t.y;
+		ufbx_vec3 nn = m->vertex_normal.exists ? ufbx_get_vertex_vec3(&m->vertex_normal, idx_of_split[v]) : (ufbx_vec3){0, 1, 0};
+		nn = ufbx_vec3_normalize(ufbx_transform_direction(&nrm, nn));
+		N[v * 3] = (float)nn.x; N[v * 3 + 1] = (float)nn.y; N[v * 3 + 2] = (float)nn.z;
 	}
 
 	uint16_t *JN = calloc(nsplit * MAXW, 2);
@@ -204,6 +218,7 @@ static void write_mesh(ufbx_scene *s, ufbx_node *node, uint32_t *bone_of_node, i
 	js(",\"triangle_count\":"); ju(ntri);
 	js(",\"position\":"); ju(bin(P, nsplit * 12));
 	js(",\"uv\":"); ju(bin(UV, nsplit * 8));
+	js(",\"normal\":"); ju(bin(N, nsplit * 12));
 	js(",\"vertex\":"); ju(bin(pos_of_split, nsplit * 4)); // the logical vertex of each split vertex
 	js(",\"joints\":"); ju(bin(JN, nsplit * MAXW * 2));
 	js(",\"weights\":"); ju(bin(WT, nsplit * MAXW * 4));
@@ -262,7 +277,7 @@ static void write_mesh(ufbx_scene *s, ufbx_node *node, uint32_t *bone_of_node, i
 		}
 	}
 	js("]}");
-	free(D); free(P); free(UV); free(JN); free(WT); free(T); free(TM); free(tmp);
+	free(D); free(P); free(UV); free(N); free(JN); free(WT); free(T); free(TM); free(tmp);
 	free(split_of_index); free(pos_of_split); free(idx_of_split); free(H);
 }
 
@@ -304,6 +319,7 @@ EXPORT("ccdz_load") int ccdz_load(const void *data, size_t size) {
 	opts.target_unit_meters = 1.0f;
 	opts.space_conversion = UFBX_SPACE_CONVERSION_MODIFY_GEOMETRY;
 	opts.ignore_animation = true;
+	opts.generate_missing_normals = true;
 	ufbx_error e;
 	scene = ufbx_load_memory(data, size, &opts, &e);
 	if (!scene) {

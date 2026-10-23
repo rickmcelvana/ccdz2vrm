@@ -41,6 +41,8 @@ export type Mesh = {
   triangle_count: number;
   position: Float32Array;
   uv: Float32Array;
+  /** Unit normals (raw import from ufbx; dump_contract.py writes none). */
+  normal?: Float32Array | undefined;
   /** The source vertex each split vertex comes from (Blender's vertex / ufbx's logical vertex). */
   vertex?: Uint32Array | undefined;
   joints: Uint16Array;
@@ -98,9 +100,10 @@ export type Contract = {
   // writers add their own version fields (ufbx_version, blender); they pass through untyped
 };
 
-type JsonMesh = Omit<Mesh, 'position' | 'uv' | 'vertex' | 'joints' | 'weights' | 'indices' | 'triangle_material' | 'morphs'> & {
+type JsonMesh = Omit<Mesh, 'position' | 'uv' | 'normal' | 'vertex' | 'joints' | 'weights' | 'indices' | 'triangle_material' | 'morphs'> & {
   position: number;
   uv: number;
+  normal?: number;
   vertex?: number;
   joints: number;
   weights: number;
@@ -126,6 +129,7 @@ export function readContract(json: string, bin: Uint8Array): Contract {
         ...m,
         position: view(Float32Array, m.position, n * 3),
         uv: view(Float32Array, m.uv, n * 2),
+        normal: m.normal === undefined ? undefined : view(Float32Array, m.normal, n * 3),
         vertex: m.vertex === undefined ? undefined : view(Uint32Array, m.vertex, n),
         joints: view(Uint16Array, m.joints, n * MAXW),
         weights: view(Float32Array, m.weights, n * MAXW),
@@ -155,10 +159,11 @@ export function writeContract(c: Contract): { json: string; bin: Uint8Array } {
   };
   const doc: JsonContract = {
     ...c,
-    meshes: c.meshes.map(({ vertex, ...m }) => ({
+    meshes: c.meshes.map(({ vertex, normal, ...m }) => ({
       ...m,
       position: put(m.position),
       uv: put(m.uv),
+      ...(normal ? { normal: put(normal) } : {}),
       ...(vertex ? { vertex: put(vertex) } : {}),
       joints: put(m.joints),
       weights: put(m.weights),

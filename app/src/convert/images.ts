@@ -7,7 +7,72 @@ export type Pixels = { width: number; height: number; data: Uint8Array | Uint8Cl
 
 export type ImageCodec = {
   decode(bytes: Uint8Array): Promise<Pixels>;
+  /** PNG keeps alpha; JPEG drops it. quality 0..1, JPEG only. */
+  encode(px: Pixels, format: 'png' | 'jpeg', quality?: number): Promise<Uint8Array>;
 };
+
+/**
+ * A PNG with only the chunks that draw it (IHDR, PLTE, tRNS, IDAT, IEND). glTF images are
+ * sRGB and colour-space chunks (iCCP, gAMA, cHRM, sRGB) are to be ignored; the Khronos
+ * validator flags them (IMAGE_FEATURES_UNSUPPORTED) on CC's source maps. No re-encode.
+ */
+export function stripPng(b: Uint8Array): Uint8Array {
+  if (mimeOf(b) !== 'image/png') return b;
+  const keep = new Set(['IHDR', 'PLTE', 'tRNS', 'IDAT', 'IEND']);
+  const parts: Uint8Array[] = [b.subarray(0, 8)];
+  for (let o = 8; o + 12 <= b.length; ) {
+    const len = u32(b, o), type = String.fromCharCode(b[o + 4]!, b[o + 5]!, b[o + 6]!, b[o + 7]!);
+    if (keep.has(type)) parts.push(b.subarray(o, o + 12 + len));
+    o += 12 + len;
+    if (type === 'IEND') break;
+  }
+  const out = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
+  let o = 0;
+  for (const p of parts) {
+    out.set(p, o);
+    o += p.length;
+  }
+  return out;
+}
+
+/** What an image is, read from its first bytes. */
+export function mimeOf(b: Uint8Array): 'image/png' | 'image/jpeg' | null {
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png';
+  if (b[0] === 0xff && b[1] === 0xd8) return 'image/jpeg';
+  return null;
+}
+
+/**
+ * Downscale to w x h by averaging each target pixel's source footprint (a box filter, exact
+ * for the integer factors Daz/CC maps hit, 4096 -> 1024). Blender's `Image.scale` filters
+ * too; the two agree to a few levels per channel (ENVIRONMENT.md s33).
+ */
+export function resize(px: Pixels, w: number, h: number): Pixels {
+  const { width: sw, height: sh, data } = px;
+  if (sw === w && sh === h) return px;
+  const out = new Uint8Array(w * h * 4);
+  const fx = sw / w, fy = sh / h;
+  const acc = new Float64Array(4);
+  for (let y = 0; y < h; y++) {
+    const y0 = y * fy, y1 = y0 + fy;
+    for (let x = 0; x < w; x++) {
+      const x0 = x * fx, x1 = x0 + fx;
+      acc.fill(0);
+      let area = 0;
+      for (let sy = Math.floor(y0); sy < Math.min(sh, Math.ceil(y1)); sy++) {
+        const wy = Math.min(y1, sy + 1) - Math.max(y0, sy);
+        for (let sx = Math.floor(x0); sx < Math.min(sw, Math.ceil(x1)); sx++) {
+          const wgt = wy * (Math.min(x1, sx + 1) - Math.max(x0, sx));
+          const o = (sy * sw + sx) * 4;
+          for (let c = 0; c < 4; c++) acc[c] = acc[c]! + wgt * data[o + c]!;
+          area += wgt;
+        }
+      }
+      for (let c = 0; c < 4; c++) out[(y * w + x) * 4 + c] = Math.round(acc[c]! / area);
+    }
+  }
+  return { width: w, height: h, data: out };
+}
 
 const u32 = (b: Uint8Array, o: number) => ((b[o]! << 24) | (b[o + 1]! << 16) | (b[o + 2]! << 8) | b[o + 3]!) >>> 0;
 

@@ -798,3 +798,54 @@ Not exercised by a real export here: the **Traditional profile** mix (both test 
 the ARKit set; the earlier Traditional export is no longer in `imports/`) and the **opacity
 rewire**. The mapping tables are pinned by `adaptCc.test.ts`; run a Traditional export through
 `run_adapt.sh` when one is available.
+
+## 33. Browser port, Phase 3: the finisher and VRM writer in TypeScript [V] — 2026-10-23
+
+`app/src/convert/finish.ts` (+ `glb.ts`, `vrmTables.ts`, `vrmTPose.ts`) turns the adapted
+contract into a VRM 1.0 file: humanoid map, expressions (52 ARKit customs + presets), key
+pruning, lookAt, first person, meta, <= 4 normalised weights, materials (opacity merge, MASK /
+MASK+BLEND fringe / OPAQUE), the texture budget, and the VRM add-on's export T-pose. Judged by
+`tools/compare/vrm.ts` against Blender's VRM (`tools/port/run_finish.sh cc ...`): it reads both
+files back as a runtime would (rest skinning through joint world x inverse bind) and runs the
+contract comparison, plus humanoid, expressions, lookAt, first person, materials and texture
+pixels. **Both CC exports pass.**
+
+| | Ira | ALICE-00001a |
+|---|---|---|
+| Humanoid / expressions / first person | 54 bones, 70 expressions, all identical | the same |
+| lookAt offset | within 0.009 mm | 0.004 mm |
+| Vertices (rest, as rendered) | all 14 meshes ≤ 0.036 mm | ≤ 0.036 mm |
+| Normals | p99 ≤ 2.3° (0.02° on rigid meshes) | p99 ≤ 1.7° |
+| Morphs kept | 146, all within 0.1 mm | the same |
+| Materials | 31/31 same mode and factors; texture pixels ≤ 1.24/255 mean | 28/28 |
+| Khronos validator / three-vrm / vrm_check | 0 errors / ok / ok | the same |
+| Size (1K textures) | 35.3 MB (Blender 49.2) | 28.2 MB (41.6) |
+| Time, whole chain in Node | ufbx 0.2 s + cleanup 1.2 s + adapter 0.3 s + finisher 7.7 s | 0.9 + 0.3 + 6.8 s |
+
+Found on the way, each measured:
+- **The VRM add-on re-poses the figure on export.** Its automatic T-pose
+  (`set_estimated_humanoid_t_pose`) aims arms, fingers, thumbs (45° forward), hands and legs to
+  the VRM 1.0 T-pose, writes that pose into the nodes and keeps the original inverse bind
+  matrices: Blender's VRM is not at its bind pose at rest (Ira: thumbs 23°, legs 2.1°, fingers
+  1–4°; the sneakers render 23.6 mm from their mesh data). Animations (VRMA) are authored
+  against that T-pose, so it matters. Ported (`vrmTPose.ts`) and baked as the rest pose instead,
+  so our bind stays the identity and the rendered rest matches Blender's.
+- **Normals follow two rules.** Where Blender bakes a pose into the mesh (the adapters' A → T),
+  FBX custom normals are stored per face corner and follow the surface; blending them with the
+  bones was 6° off at the shoulders, so they are turned by the surface's own rotation. Where
+  Blender only poses bones (the export T-pose), a runtime blends normals with the bones, and so
+  does the port. (Blender's corner-space rule is approximated: p99 2.3°, a few armpit vertices
+  up to 15°.)
+- **Split vertices by normal value, not index.** FBX gives every polygon corner its own normal
+  index; splitting by index nearly doubled the vertices of smooth meshes.
+- **Licence metadata.** `vrm_export.py` wrote image-to-vrm's CC0 defaults into every VRM:
+  "everyone, corporation, redistribution and modification allowed". Wrong for Daz/CC content,
+  which is all this repo converts: both finishers now write `onlyAuthor`, `personalNonProfit`,
+  no redistribution, no modification, credit required.
+
+Deliberate differences from Blender's file (all documented in `finish.ts`): bones written with
+identity rotations; no `KHR_materials_specular` (Blender exports CC's specular maps — the one
+visible effect is a slightly flatter face highlight, side-by-side render checked) and no empty
+vertex-colour sets; morph targets without normals; unchanged source images embedded as they are
+(PNG colour-space chunks stripped, which the validator flags), re-encoded ones JPEG unless they
+need alpha, normal maps PNG.

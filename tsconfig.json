@@ -23,5 +23,5 @@
     "noEmit": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["app/src", "tools/port", "vite.config.ts"]
+  "include": ["app/src", "tools/port", "tools/compare/vrm.ts", "vite.config.ts"]
 }

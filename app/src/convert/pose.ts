@@ -131,9 +131,14 @@ export class Pose {
  * Blender's armature deform of one mesh: returns new positions (and, given deltas, the new
  * deltas). Bones whose skinning matrix is the identity are skipped as a fast path.
  */
-export function deformMesh(m: Mesh, S: Mat4[], deltas: Float32Array[] = []): { position: Float32Array; deltas: Float32Array[] } {
+export function deformMesh(
+  m: Mesh,
+  S: Mat4[],
+  deltas: Float32Array[] = [],
+): { position: Float32Array; normal: Float32Array | undefined; deltas: Float32Array[] } {
   const moving = S.map((s) => s.some((x, k) => Math.abs(x - (k % 5 === 0 ? 1 : 0)) > 1e-15));
   const position = new Float32Array(m.position);
+  const normal = m.normal ? new Float32Array(m.normal) : undefined;
   const out = deltas.map((d) => new Float32Array(d));
   for (let v = 0; v < m.vertex_count; v++) {
     let total = 0, any = false;
@@ -160,6 +165,17 @@ export function deformMesh(m: Mesh, S: Mat4[], deltas: Float32Array[] = []): { p
     position[v * 3] = x / total;
     position[v * 3 + 1] = y / total;
     position[v * 3 + 2] = z / total;
+    if (normal && m.normal) {
+      // the blended linear part, renormalised (rotations only here: no inverse-transpose needed)
+      const nx = m.normal[v * 3]!, ny = m.normal[v * 3 + 1]!, nz = m.normal[v * 3 + 2]!;
+      const ox = lin[0]! * nx + lin[3]! * ny + lin[6]! * nz;
+      const oy = lin[1]! * nx + lin[4]! * ny + lin[7]! * nz;
+      const oz = lin[2]! * nx + lin[5]! * ny + lin[8]! * nz;
+      const l = Math.hypot(ox, oy, oz) || 1;
+      normal[v * 3] = ox / l;
+      normal[v * 3 + 1] = oy / l;
+      normal[v * 3 + 2] = oz / l;
+    }
     deltas.forEach((d, q) => {
       const dx = d[v * 3]!, dy = d[v * 3 + 1]!, dz = d[v * 3 + 2]!;
       if (!dx && !dy && !dz) return;
@@ -167,14 +183,63 @@ export function deformMesh(m: Mesh, S: Mat4[], deltas: Float32Array[] = []): { p
       for (let r = 0; r < 3; r++) o[v * 3 + r] = (lin[r]! * dx + lin[3 + r]! * dy + lin[6 + r]! * dz) / total;
     });
   }
-  return { position, deltas: out };
+  return { position, normal, deltas: out };
 }
 
-/** common.py apply_pose_as_rest: the pose becomes the rest pose, every key kept exact. */
-export function applyPoseAsRest(pose: Pose, meshes: Mesh[]): void {
+/** Area-weighted vertex normals of the surface, per source vertex (`vertex`), spread to splits. */
+function surfaceNormals(m: Mesh, pos: Float32Array): Float64Array {
+  const id = (v: number) => (m.vertex ? m.vertex[v]! : v);
+  const acc = new Map<number, [number, number, number]>();
+  for (let t = 0; t < m.triangle_count; t++) {
+    const [a, b, c] = [m.indices[t * 3]!, m.indices[t * 3 + 1]!, m.indices[t * 3 + 2]!];
+    const ux = pos[b * 3]! - pos[a * 3]!, uy = pos[b * 3 + 1]! - pos[a * 3 + 1]!, uz = pos[b * 3 + 2]! - pos[a * 3 + 2]!;
+    const vx = pos[c * 3]! - pos[a * 3]!, vy = pos[c * 3 + 1]! - pos[a * 3 + 1]!, vz = pos[c * 3 + 2]! - pos[a * 3 + 2]!;
+    const n: [number, number, number] = [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
+    for (const v of [a, b, c]) {
+      const s = acc.get(id(v)) ?? [0, 0, 0];
+      acc.set(id(v), [s[0] + n[0], s[1] + n[1], s[2] + n[2]]);
+    }
+  }
+  const out = new Float64Array(m.vertex_count * 3);
+  for (let v = 0; v < m.vertex_count; v++) out.set(acc.get(id(v)) ?? [0, 0, 0], v * 3);
+  return out;
+}
+
+/**
+ * Normals after a pose is baked. Blender keeps FBX custom normals relative to each face
+ * corner, so they follow the deformed surface; blending them with the bone matrices instead
+ * was 6 deg off at the shoulders after the A -> T pose (ENVIRONMENT.md s33). Each normal is
+ * turned by the rotation that takes the surface normal at its vertex from rest to posed.
+ */
+function transportNormals(m: Mesh, rest: Float32Array, posed: Float32Array): Float32Array | undefined {
+  if (!m.normal) return undefined;
+  const a = surfaceNormals(m, rest), b = surfaceNormals(m, posed);
+  const out = new Float32Array(m.normal);
+  for (let v = 0; v < m.vertex_count; v++) {
+    const from: Vec3 = [a[v * 3]!, a[v * 3 + 1]!, a[v * 3 + 2]!], to: Vec3 = [b[v * 3]!, b[v * 3 + 1]!, b[v * 3 + 2]!];
+    if (Math.hypot(...from) < 1e-20 || Math.hypot(...to) < 1e-20) continue;
+    const { axis, angle } = rotationDifference(from, to);
+    if (angle < 1e-9) continue;
+    const R = rotationAbout(axis, angle, [0, 0, 0]);
+    const nx = m.normal[v * 3]!, ny = m.normal[v * 3 + 1]!, nz = m.normal[v * 3 + 2]!;
+    out[v * 3] = R[0]! * nx + R[4]! * ny + R[8]! * nz;
+    out[v * 3 + 1] = R[1]! * nx + R[5]! * ny + R[9]! * nz;
+    out[v * 3 + 2] = R[2]! * nx + R[6]! * ny + R[10]! * nz;
+  }
+  return out;
+}
+
+/**
+ * common.py apply_pose_as_rest: the pose becomes the rest pose, every key kept exact.
+ * `normals`: 'surface' where Blender bakes the pose into the mesh (the adapters' A -> T: its
+ * custom normals follow the surface); 'skinned' where Blender leaves the mesh at bind and only
+ * poses the bones (the add-on's export T-pose: a runtime blends normals with the bones).
+ */
+export function applyPoseAsRest(pose: Pose, meshes: Mesh[], normals: 'surface' | 'skinned' = 'surface'): void {
   const S = pose.skinning();
   for (const m of meshes) {
     const r = deformMesh(m, S, m.morphs.map((k) => k.delta));
+    m.normal = normals === 'surface' ? transportNormals(m, m.position, r.position) : r.normal;
     m.position = r.position;
     m.morphs.forEach((k, q) => (k.delta = r.deltas[q]!));
   }

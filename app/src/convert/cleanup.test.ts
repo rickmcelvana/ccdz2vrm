@@ -41,7 +41,7 @@ async function build() {
     meshes: [mesh('LashMesh', 10, [3], true), mesh('HairMesh', 11, [5], true), mesh('Chain', 9, [], false)],
     materials: [], images: [],
   };
-  return cleanImport(raw, { decode: () => Promise.reject(new Error('no images')) });
+  return cleanImport(raw, { decode: () => Promise.reject(new Error('no images')), encode: () => Promise.reject(new Error('no images')) });
 }
 
 describe('cleanImport skeleton', () => {

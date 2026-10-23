@@ -18,6 +18,7 @@ const TOL = {
   dominant_bone: 0.995, // share of matched vertices whose strongest bone agrees
   morph_mm: 0.1, // or MORPH_REL of the key's largest delta
   morph_rel: 0.01,
+  normal_deg_p99: 5,
 };
 
 function load(p) {
@@ -120,7 +121,7 @@ function grid(P, n) {
   }
   return g;
 }
-function nearest(g, P, UV, p, uv) {
+function nearest(g, P, UV, p, uv, N = null, n = null) {
   const cx = Math.floor(p[0] / CELL), cy = Math.floor(p[1] / CELL), cz = Math.floor(p[2] / CELL);
   let best = -1, bd = Infinity;
   for (let x = cx - 1; x <= cx + 1; x++)
@@ -129,7 +130,10 @@ function nearest(g, P, UV, p, uv) {
         for (const v of g.get(`${x},${y},${z}`) ?? []) {
           const d = Math.hypot(P[v * 3] - p[0], P[v * 3 + 1] - p[1], P[v * 3 + 2] - p[2]);
           const du = Math.hypot(UV[v * 2] - uv[0], UV[v * 2 + 1] - uv[1]);
-          const score = d + du * 0.01; // 1 mm == 0.1 uv units: same spot, then same uv
+          // 1 mm == 0.1 uv units: same spot, then same uv, then (when both have them) the same
+          // normal -- a seam or a two-layer cloth puts different normals on one position + uv
+          const dn = N && n ? 1 - (N[v * 3] * n[0] + N[v * 3 + 1] * n[1] + N[v * 3 + 2] * n[2]) : 0;
+          const score = d + du * 0.01 + dn * 0.0001;
           if (score < bd) { bd = score; best = v; }
         }
   return best;
@@ -150,9 +154,11 @@ for (const [i, j] of pairs) {
   const match = new Int32Array(ma.vertex_count).fill(-1);
   const perr = [];
   let uvBad = 0;
+  const NAm = ma.normal !== undefined && mb.normal !== undefined ? A.f32(ma.normal, ma.vertex_count * 3) : null;
+  const NBm = NAm ? B.f32(mb.normal, mb.vertex_count * 3) : null;
   for (let v = 0; v < ma.vertex_count; v++) {
     const p = [PA[v * 3], PA[v * 3 + 1], PA[v * 3 + 2]];
-    const w = nearest(g, PB, UB, p, [UA[v * 2], UA[v * 2 + 1]]);
+    const w = nearest(g, PB, UB, p, [UA[v * 2], UA[v * 2 + 1]], NBm, NAm ? [NAm[v * 3], NAm[v * 3 + 1], NAm[v * 3 + 2]] : null);
     if (w < 0) continue;
     match[v] = w;
     perr.push(Math.hypot(PB[w * 3] - p[0], PB[w * 3 + 1] - p[1], PB[w * 3 + 2] - p[2]));
@@ -164,6 +170,20 @@ for (const [i, j] of pairs) {
   r.uv_mismatch = pct(uvBad / Math.max(1, matched));
   if (matched < ma.vertex_count) fail(`mesh ${ma.name}: ${ma.vertex_count - matched} vertices with no counterpart within 0.5 mm`);
   else if (maxOf(perr) * 1000 > TOL.position_mm) fail(`mesh ${ma.name}: position error ${r.position_mm.max} mm`);
+
+  // normals, when both sides carry them (VRM read-backs): angle between matched vertices'
+  if (ma.normal !== undefined && mb.normal !== undefined) {
+    const NA = A.f32(ma.normal, ma.vertex_count * 3), NB = B.f32(mb.normal, mb.vertex_count * 3);
+    const ang = [];
+    for (let v = 0; v < ma.vertex_count; v++) {
+      const w = match[v];
+      if (w < 0) continue;
+      const d = NA[v * 3] * NB[w * 3] + NA[v * 3 + 1] * NB[w * 3 + 1] + NA[v * 3 + 2] * NB[w * 3 + 2];
+      ang.push((Math.acos(Math.max(-1, Math.min(1, d))) * 180) / Math.PI);
+    }
+    r.normal_deg = { p50: +quantile(ang, 0.5).toFixed(2), p99: +quantile(ang, 0.99).toFixed(2), max: +maxOf(ang).toFixed(2) };
+    if (quantile(ang, 0.99) > TOL.normal_deg_p99) fail(`mesh ${ma.name}: normals differ, p99 ${r.normal_deg.p99} deg`);
+  }
 
   // skin weights, compared by bone base name
   const JA = A.u16(ma.joints, ma.vertex_count * 8), WA = A.f32(ma.weights, ma.vertex_count * 8);
@@ -257,6 +277,7 @@ console.log(`  bones ${report.bones.matched}/${report.bones.reference} (candidat
 for (const m of report.meshes) {
   if (m.missing) { console.log(`  ${m.name}: MISSING`); continue; }
   console.log(`  ${m.name}: verts ${m.vertices}/${m.candidate.vertices} matched ${m.matched}% pos ${JSON.stringify(m.position_mm)} uv-off ${m.uv_mismatch}%` +
+    (m.normal_deg ? ` normal deg p99 ${m.normal_deg.p99} max ${m.normal_deg.max}` : '') +
     (m.skin ? ` skin-agree ${m.skin.dominant_agree}% l1p99 ${m.skin.l1_p99}` : '') +
     ` morphs ok ${m.morph_result.ok} off ${m.morph_result.off} missing ${m.morph_result.missing}` +
     (m.morph_result.off ? ` worst ${m.morph_result.worst.key} ${m.morph_result.worst.mm}/${m.morph_result.worst.largest_delta_mm} mm` : ''));

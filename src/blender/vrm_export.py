@@ -33,7 +33,7 @@ argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 ap = argparse.ArgumentParser()
 ap.add_argument("out")
 ap.add_argument("--name", default="image-to-vrm base")
-ap.add_argument("--author", default="image-to-vrm")
+ap.add_argument("--author", default="ccdz2vrm")
 ap.add_argument("--max-texture", type=int, default=0, help="downscale textures larger than this (0 = keep)")
 ap.add_argument("--bones", default="auto", help="bone table name, 'auto' to detect, 'none' for the add-on's mapper")
 ap.add_argument("--max-mesh-verts", type=int, default=0,
@@ -353,11 +353,14 @@ meta.vrm_name = args.name
 meta.authors.clear()
 meta.authors.add().value = args.author
 meta.license_url = "https://vrm.dev/licenses/1.0/"
-meta.avatar_permission = "everyone"
-meta.commercial_usage = "corporation"
-meta.allow_redistribution = True
-meta.modification = "allowModificationRedistribution"
-meta.credit_notation = "unnecessary"
+# Every avatar this repo makes is Daz/CC content under the user's own licence, so the file
+# grants nothing beyond it (image-to-vrm's CC0 defaults said "everyone, corporation,
+# redistribution allowed", which the content's licence does not give; docs/LICENSING.md).
+meta.avatar_permission = "onlyAuthor"
+meta.commercial_usage = "personalNonProfit"
+meta.allow_redistribution = False
+meta.modification = "prohibited"
+meta.credit_notation = "required"
 
 # --- 6. skin weights: <=4 influences, normalised ------------------------------
 for m in meshes:
