@@ -96,6 +96,32 @@ static uint32_t hget(uint64_t key, uint32_t next, int *fresh) {
 	}
 }
 
+static ufbx_scene *scene;
+static char *is_bone;
+
+// The FBX material properties Blender's importer reads (blen_read_material), as they are in
+// this element's own Properties70 or its template: the cleanup applies Blender's rules.
+static const char *PROPS[] = {"DiffuseColor", "SpecularFactor", "Shininess", "ShininessExponent",
+	"TransparencyFactor", "Opacity", "TransparentColor", "ReflectionFactor", "BumpFactor",
+	"EmissiveFactor", "EmissiveColor"};
+static void jprops(const ufbx_props *props) {
+	js("{");
+	int first = 1;
+	for (size_t i = 0; i < props->props.count; i++) {
+		const ufbx_prop *p = &props->props.data[i];
+		int want = 0;
+		for (size_t k = 0; k < sizeof PROPS / sizeof *PROPS; k++) want |= strcmp(p->name.data, PROPS[k]) == 0;
+		if (!want) continue;
+		if (!first) js(",");
+		first = 0;
+		jstr(p->name.data, p->name.length);
+		js(":[");
+		for (int k = 0; k < 4; k++) { jf("%.9g", p->value_real_arr[k]); if (k < 3) js(","); }
+		js("]");
+	}
+	js("}");
+}
+
 static int bone_index(ufbx_scene *s, const ufbx_node *n, uint32_t *bone_of_node) {
 	return n ? (int)bone_of_node[n->typed_id] : -1;
 }
@@ -172,6 +198,7 @@ static void write_mesh(ufbx_scene *s, ufbx_node *node, uint32_t *bone_of_node, i
 	if (!*first) js(",");
 	*first = 0;
 	js("{\"name\":"); jstr(node->name.data, node->name.length);
+	js(",\"node\":"); ju(node->typed_id);
 	js(",\"mesh\":"); jstr(m->name.data, m->name.length);
 	js(",\"vertex_count\":"); ju(nsplit);
 	js(",\"triangle_count\":"); ju(ntri);
@@ -181,11 +208,28 @@ static void write_mesh(ufbx_scene *s, ufbx_node *node, uint32_t *bone_of_node, i
 	js(",\"weights\":"); ju(bin(WT, nsplit * MAXW * 4));
 	js(",\"indices\":"); ju(bin(T, ntri * 12));
 	js(",\"triangle_material\":"); ju(bin(TM, ntri * 2));
+	js(",\"clusters\":[");
+	for (size_t c = 0; skin && c < skin->clusters.count; c++) {
+		if (c) js(",");
+		int b = bone_index(s, skin->clusters.data[c]->bone_node, bone_of_node);
+		char t[16]; snprintf(t, sizeof t, "%d", b); js(t);
+	}
+	// the nearest bone above the mesh node: where a bone-less prop hangs (import_fbx_clean 4)
+	int hang = -1;
+	for (ufbx_node *a = node->parent; a && hang < 0; a = a->parent)
+		if (is_bone[a->typed_id]) hang = (int)bone_of_node[a->typed_id];
+	{ char t[16]; snprintf(t, sizeof t, "%d", hang); js("],\"hang_bone\":"); js(t); }
 	js(",\"materials\":[");
 	for (size_t i = 0; i < m->materials.count; i++) {
 		if (i) js(",");
 		ufbx_material *mt = m->materials.data[i];
 		jstr(mt->name.data, mt->name.length);
+	}
+	// names repeat (two CC materials called Hair_Transparency), so also by index
+	js("],\"material_index\":[");
+	for (size_t i = 0; i < m->materials.count; i++) {
+		if (i) js(",");
+		ju(m->materials.data[i]->typed_id);
 	}
 	js("],\"morphs\":[");
 	int fm = 1;
@@ -221,7 +265,6 @@ static void write_mesh(ufbx_scene *s, ufbx_node *node, uint32_t *bone_of_node, i
 	free(split_of_index); free(pos_of_split); free(idx_of_split); free(H);
 }
 
-static ufbx_scene *scene;
 
 EXPORT("ccdz_alloc") void *ccdz_alloc(size_t n) { return malloc(n); }
 EXPORT("ccdz_free") void ccdz_free(void *p) { free(p); }
@@ -269,7 +312,7 @@ EXPORT("ccdz_load") int ccdz_load(const void *data, size_t size) {
 
 	// bones: every node that is a bone or a skin cluster's bone
 	uint32_t *bone_of_node = malloc(scene->nodes.count * sizeof(uint32_t));
-	char *is_bone = calloc(scene->nodes.count, 1);
+	is_bone = calloc(scene->nodes.count, 1);
 	ufbx_matrix *rest = calloc(scene->nodes.count, sizeof(ufbx_matrix));
 	char *have = calloc(scene->nodes.count, 1);
 	for (size_t i = 0; i < scene->nodes.count; i++) if (scene->nodes.data[i]->bone) is_bone[i] = 1;
@@ -292,18 +335,47 @@ EXPORT("ccdz_load") int ccdz_load(const void *data, size_t size) {
 	ju(UFBX_HEADER_VERSION / 1000000); js("."); ju(UFBX_HEADER_VERSION / 1000 % 1000); js("."); ju(UFBX_HEADER_VERSION % 1000);
 	js("\",\"bones\":[");
 	uint32_t nb = 0;
+	for (size_t i = 0; i < scene->nodes.count; i++) bone_of_node[i] = is_bone[i] ? nb++ : UINT32_MAX;
+	nb = 0;
 	for (size_t i = 0; i < scene->nodes.count; i++) {
-		if (!is_bone[i]) { bone_of_node[i] = UINT32_MAX; continue; }
+		if (!is_bone[i]) continue;
 		ufbx_node *n = scene->nodes.data[i];
-		bone_of_node[i] = nb;
 		if (nb) js(",");
 		js("{\"name\":"); jstr(n->name.data, n->name.length);
 		js(",\"parent\":");
 		if (n->parent && !n->parent->is_root) jstr(n->parent->name.data, n->parent->name.length); else js("null");
+		// names repeat (Daz skeleton copies), so the parent is also given by index
+		{ char t[16]; snprintf(t, sizeof t, "%d", n->parent && is_bone[n->parent->typed_id] ? (int)bone_of_node[n->parent->typed_id] : -1);
+		  js(",\"parent_index\":"); js(t); }
+		js(",\"armature\":");
+		{
+			ufbx_node *a = n->parent;
+			while (a && is_bone[a->typed_id]) a = a->parent;
+			if (a && !a->is_root) jstr(a->name.data, a->name.length); else js("null");
+		}
 		js(",\"rest_from\":\""); js(have[i] == 2 ? "cluster" : have[i] == 1 ? "bind_pose" : "node"); js("\"");
 		js(",\"matrix\":"); jmat(have[i] ? rest[i] : n->node_to_world);
 		js("}");
 		nb++;
+	}
+	// every node, with its FBX type: the cleanup applies Blender's bone/armature rule to
+	// these (import_fbx.py find_armatures / find_fake_bones), not to `bones` above
+	js("],\"nodes\":[");
+	int firstn = 1;
+	for (size_t i = 0; i < scene->nodes.count; i++) {
+		ufbx_node *n = scene->nodes.data[i];
+		if (n->is_root) continue;
+		if (!firstn) js(",");
+		firstn = 0;
+		js("{\"name\":"); jstr(n->name.data, n->name.length);
+		js(",\"id\":"); ju(n->typed_id);
+		{ char t[16]; snprintf(t, sizeof t, "%d", n->parent && !n->parent->is_root ? (int)n->parent->typed_id : -1); js(",\"parent\":"); js(t); }
+		js(",\"type\":\"");
+		js(n->bone ? (n->bone->is_root ? "root" : "limb") : n->mesh ? "mesh" : n->attrib_type == UFBX_ELEMENT_EMPTY || !n->attrib ? "null" : "other");
+		js("\"");
+		{ char t[16]; snprintf(t, sizeof t, "%d", is_bone[i] ? (int)bone_of_node[i] : -1); js(",\"bone\":"); js(t); }
+		js(",\"matrix\":"); jmat(have[i] ? rest[i] : n->node_to_world);
+		js("}");
 	}
 	js("],\"meshes\":[");
 	int first = 1;
@@ -314,6 +386,8 @@ EXPORT("ccdz_load") int ccdz_load(const void *data, size_t size) {
 		ufbx_material *mt = scene->materials.data[i];
 		if (i) js(",");
 		js("{\"name\":"); jstr(mt->name.data, mt->name.length);
+		js(",\"props\":"); jprops(&mt->props);
+		js(",\"template\":"); if (mt->props.defaults) jprops(mt->props.defaults); else js("{}");
 		js(",\"textures\":[");
 		for (size_t k = 0; k < mt->textures.count; k++) {
 			ufbx_material_texture *mtx = &mt->textures.data[k];
@@ -323,7 +397,9 @@ EXPORT("ccdz_load") int ccdz_load(const void *data, size_t size) {
 			js(",\"file\":"); jstr(tx->relative_filename.data, tx->relative_filename.length);
 			js(",\"bytes\":"); ju(tx->content.size);
 			char h[24]; snprintf(h, sizeof h, "%016llx", (unsigned long long)fnv1a(tx->content.data, tx->content.size));
-			js(",\"fnv\":\""); js(h); js("\"}");
+			js(",\"fnv\":\""); js(h); js("\"");
+			js(",\"image\":"); { char t[16]; snprintf(t, sizeof t, "%d", tx->video ? (int)tx->video->typed_id : -1); js(t); }
+			js("}");
 		}
 		js("]}");
 	}
@@ -334,12 +410,14 @@ EXPORT("ccdz_load") int ccdz_load(const void *data, size_t size) {
 		js("{\"name\":"); jstr(v->relative_filename.data, v->relative_filename.length);
 		js(",\"bytes\":"); ju(v->content.size);
 		char h[24]; snprintf(h, sizeof h, "%016llx", (unsigned long long)fnv1a(v->content.data, v->content.size));
-		js(",\"fnv\":\""); js(h); js("\"}");
+		js(",\"fnv\":\""); js(h); js("\"");
+		js(",\"data\":"); ju(v->content.size ? bin(v->content.data, v->content.size) : 0);
+		js("}");
 	}
 	js("]}");
 	char z = 0;
 	put(&J, &z, 1);
 	J.n--;
-	free(bone_of_node); free(is_bone); free(rest); free(have);
+	free(bone_of_node); free(is_bone); is_bone = NULL; free(rest); free(have);
 	return 0;
 }

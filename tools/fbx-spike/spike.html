@@ -18,9 +18,14 @@
   const mb = (n) => Math.round(n / 1e5) / 10;
   const heap = () => performance.memory?.usedJSHeapSize ?? 0;
 
+  // in 32 MB pieces: one 400 MB POST body broke Playwright's connection (ENVIRONMENT.md s31)
   async function save(file, data) {
-    const r = await fetch(`/save?file=${encodeURIComponent(file)}`, { method: 'POST', body: data });
-    if (!r.ok) throw new Error(`save ${file}: ${r.status}`);
+    const CHUNK = 32 << 20;
+    for (let off = 0; off === 0 || off < data.byteLength; off += CHUNK) {
+      const part = data.subarray(off, Math.min(data.byteLength, off + CHUNK));
+      const r = await fetch(`/save?file=${encodeURIComponent(file)}&append=${off ? 1 : 0}`, { method: 'POST', body: part });
+      if (!r.ok) throw new Error(`save ${file}: ${r.status}`);
+    }
   }
 
   // --- ufbx (WASM, wasm32-wasi reactor: stub WASI, nothing touches files) ------------

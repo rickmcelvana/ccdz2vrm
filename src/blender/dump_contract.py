@@ -3,6 +3,8 @@ browser port is compared against.
 
     # the FBX as Blender's importer gives it, nothing cleaned (parser comparison)
     blender --background --factory-startup --python src/blender/dump_contract.py -- in.fbx out/x.raw --raw
+    # after common.import_fbx_clean: the first step of both adapters (port Phase 1)
+    blender --background --factory-startup --python src/blender/dump_contract.py -- in.fbx out/x.clean --clean
     # an adapter's .blend (what the finisher receives)
     blender --background out/x.blend --python src/blender/dump_contract.py -- out/x.adapted
 
@@ -10,7 +12,9 @@ Writes <out>.json + <out>.bin. Same format as tools/fbx-spike/ufbx_contract.c: g
 (Y up, +Z front, metres); bones with world rest matrices; meshes with vertices split per
 (vertex, uv) like a glTF export, top-8 skin weights, triangles, per-triangle material and
 every shape key as per-vertex deltas; images identified by FNV-1a over length + first and
-last 64 KB.
+last 64 KB; materials as the Principled BSDF the finisher reads (base colour, alpha and
+which image output drives it, roughness, metallic, normal map and whether it was made from
+a height map).
 """
 
 from __future__ import annotations
@@ -25,11 +29,17 @@ from mathutils import Matrix
 
 argv = sys.argv[sys.argv.index("--") + 1:]
 raw = "--raw" in argv
+clean = "--clean" in argv
 args = [a for a in argv if not a.startswith("--")]
 if raw:
     fbx, out = args
     bpy.ops.wm.read_factory_settings(use_empty=True)
     bpy.ops.import_scene.fbx(filepath=os.path.abspath(fbx))
+elif clean:
+    fbx, out = args
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from common import import_fbx_clean
+    import_fbx_clean(fbx)
 else:
     (out,) = args
 
@@ -145,6 +155,41 @@ def image_bytes(img):
     return open(path, "rb").read() if os.path.isfile(path) else b""
 
 
+def pbr(mat):
+    """The Principled BSDF as the finisher reads it."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from common import upstream_image
+    nt = mat.node_tree
+    b = next((n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"), None) if nt else None
+    if b is None:
+        return None
+
+    def img_fnv(node):
+        return fnv(image_bytes(node.image)) if node is not None and node.image else None
+
+    a = b.inputs["Alpha"]
+    alink = next((l for l in a.links if l.from_node.type == "TEX_IMAGE"), None)
+    nm = next((l.from_node for l in b.inputs["Normal"].links if l.from_node.type == "NORMAL_MAP"), None)
+    ntex = next((l.from_node for l in nm.inputs["Color"].links if l.from_node.type == "TEX_IMAGE"), None) if nm else None
+    from_height = bool(ntex and ntex.image and ntex.image.name.endswith("_normal")
+                       and ntex.image.name[:-7] in bpy.data.images)
+    src = bpy.data.images[ntex.image.name[:-7]] if from_height else (ntex.image if ntex else None)
+    return {
+        "base_color": list(b.inputs["Base Color"].default_value)[:3],
+        "base_tex": img_fnv(upstream_image(b.inputs["Base Color"])),
+        "alpha": a.default_value,
+        "alpha_tex": img_fnv(alink.from_node) if alink else None,
+        "alpha_channel": ("alpha" if alink.from_socket.name == "Alpha" else "color") if alink else None,
+        "roughness": b.inputs["Roughness"].default_value,
+        "roughness_tex": img_fnv(upstream_image(b.inputs["Roughness"])),
+        "metallic": b.inputs["Metallic"].default_value,
+        "metallic_tex": img_fnv(upstream_image(b.inputs["Metallic"])),
+        "normal_tex": fnv(image_bytes(src)) if src else None,
+        "normal_from_height": from_height,
+        "normal_strength": nm.inputs["Strength"].default_value if nm else None,
+    }
+
+
 materials = []
 for mat in bpy.data.materials:
     tex = []
@@ -155,16 +200,19 @@ for mat in bpy.data.materials:
                 next((l.to_socket.name for l in node.outputs["Alpha"].links), "")
             tex.append({"prop": dest, "file": os.path.basename(node.image.filepath), "bytes": len(data),
                         "fnv": fnv(data)})
-    materials.append({"name": mat.name, "textures": tex})
+    materials.append({"name": mat.name, "textures": tex, "pbr": pbr(mat)})
 
 images = []
 for img in bpy.data.images:
     if img.type != "IMAGE":
         continue
     data = image_bytes(img)
-    images.append({"name": os.path.basename(img.filepath), "bytes": len(data), "fnv": fnv(data)})
+    # made by common.height_to_normal, not read from the FBX: compared as pixels, not bytes
+    generated = img.name.endswith("_normal") and img.name[:-7] in bpy.data.images
+    images.append({"name": os.path.basename(img.filepath) or img.name, "bytes": len(data), "fnv": fnv(data),
+                   "generated": generated})
 
-doc = {"source": "blender-raw" if raw else "blender", "blender": bpy.app.version_string,
+doc = {"source": "blender-raw" if raw else "blender-clean" if clean else "blender", "blender": bpy.app.version_string,
        "bones": bones, "meshes": meshes, "materials": materials, "images": images}
 os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
 with open(out + ".json", "w", encoding="utf-8") as f:

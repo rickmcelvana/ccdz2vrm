@@ -3,7 +3,7 @@
 // Writes out/spike/<name>.<parser>.{json,bin}; prints timings and memory as JSON.
 import { createServer } from 'node:http';
 import { createReadStream } from 'node:fs';
-import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
@@ -21,7 +21,7 @@ const server = createServer(async (req, res) => {
       const file = path.join(OUT, path.basename(url.searchParams.get('file')));
       const parts = [];
       for await (const c of req) parts.push(c);
-      await writeFile(file, Buffer.concat(parts));
+      await (url.searchParams.get('append') === '1' ? appendFile : writeFile)(file, Buffer.concat(parts));
       return res.writeHead(200).end();
     }
     // the FBX itself, from anywhere on disk (local tool only, bound to 127.0.0.1)

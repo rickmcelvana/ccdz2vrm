@@ -20,7 +20,8 @@
     "exactOptionalPropertyTypes": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noEmit": true
+    "noEmit": true,
+    "allowImportingTsExtensions": true
   },
-  "include": ["app/src", "vite.config.ts"]
+  "include": ["app/src", "tools/port", "vite.config.ts"]
 }

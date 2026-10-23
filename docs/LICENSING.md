@@ -17,6 +17,7 @@ and what the **content** you feed it allows.
 | **memchr** (crate) | MIT / Unlicense | FBX byte scan (`fbx.rs`). |
 | **ufbx** 0.23.1 | MIT or Unlicense | FBX parser for the browser port (`tools/fbx-spike`, fetched at build time). |
 | **Zig** 0.17.0 (build tool only) | MIT | Compiles ufbx to WASM; nothing of it ships. |
+| **jpeg-js** / **pngjs** (npm) | BSD-3-Clause / MIT | Image decoding in the Node port harness only (`tools/port`); the browser decodes with `createImageBitmap`. Dev dependencies. |
 | **Khronos glTF validator** (`gltf-validator`, npm) | Apache-2.0 | `tools/validate`, dev dependency. |
 | **Playwright** (npm) + Chromium | Apache-2.0 / BSD | Headless three-vrm check and the port harness, dev dependency. |
 

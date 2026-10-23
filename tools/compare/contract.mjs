@@ -1,5 +1,8 @@
 // Compare two contracts (docs/BROWSER-PORT.md s2), reference first:
-//   node tools/compare/contract.mjs out/spike/ira.blender out/spike/ira.ufbx [--json report.json]
+//   node tools/compare/contract.mjs out/spike/ira.blender out/spike/ira.ufbx [--json report.json] [--exact]
+// --exact: bones and skin weights by full name (`hip.003` is not `hip`) and bone parents
+// compared, for cleaned contracts whose names follow Blender's; materials' `pbr` compared
+// whenever both sides carry it.
 // Vertices are matched by position (+ uv), never by index: importers split and order
 // vertices differently. Bones by base name (Blender's `.001` duplicates folded) + nearest
 // head. Exit code 1 when a tolerance from the plan is broken.
@@ -7,6 +10,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 
 const [refPath, newPath, ...rest] = process.argv.slice(2);
 const jsonOut = rest.includes('--json') ? rest[rest.indexOf('--json') + 1] : null;
+const exact = rest.includes('--exact');
 
 const TOL = {
   position_mm: 0.1, // rest vertex position, max
@@ -24,6 +28,7 @@ function load(p) {
 }
 
 const base = (n) => n.replace(/\.\d+$/, '');
+const boneKey = exact ? (n) => n : base;
 const pct = (a) => Math.round(a * 10000) / 100;
 const mm = (m) => Math.round(m * 1e6) / 1e3;
 // a loop, not Math.max(...arr): spreading 160k+ values overflows the call stack
@@ -58,7 +63,7 @@ function angleDeg(ma, mb) {
 }
 const byBase = new Map();
 B.doc.bones.forEach((b, i) => {
-  const k = base(b.name);
+  const k = boneKey(b.name);
   if (!byBase.has(k)) byBase.set(k, []);
   byBase.get(k).push(i);
 });
@@ -66,7 +71,7 @@ const boneMap = new Map(); // ref bone index -> candidate bone index
 const used = new Set();
 const headErr = [], axisErr = [];
 for (const [i, b] of A.doc.bones.entries()) {
-  const cands = (byBase.get(base(b.name)) ?? []).filter((j) => !used.has(j));
+  const cands = (byBase.get(boneKey(b.name)) ?? []).filter((j) => !used.has(j));
   if (!cands.length) continue;
   const j = cands.reduce((best, c) => (dist(head(B.doc.bones[c]), head(b)) < dist(head(B.doc.bones[best]), head(b)) ? c : best));
   used.add(j);
@@ -82,8 +87,14 @@ report.bones = {
 };
 if (boneMap.size < A.doc.bones.length) fail(`bones: ${A.doc.bones.length - boneMap.size} reference bones unmatched`);
 if (maxOf(headErr) * 1000 > TOL.bone_head_mm) fail(`bones: head error ${report.bones.head_mm.max} mm`);
-const refBoneName = (i) => base(A.doc.bones[i]?.name ?? '?');
-const newBoneName = (j) => base(B.doc.bones[j]?.name ?? '?');
+const refBoneName = (i) => boneKey(A.doc.bones[i]?.name ?? '?');
+const newBoneName = (j) => boneKey(B.doc.bones[j]?.name ?? '?');
+if (exact) {
+  const parentOff = [];
+  for (const [i, j] of boneMap) if ((A.doc.bones[i].parent ?? null) !== (B.doc.bones[j].parent ?? null)) parentOff.push(`${A.doc.bones[i].name}: ${A.doc.bones[i].parent} vs ${B.doc.bones[j].parent}`);
+  report.bones.parents_differ = parentOff.length;
+  if (parentOff.length) fail(`bones: ${parentOff.length} parents differ, e.g. ${parentOff.slice(0, 3).join('; ')}`);
+}
 
 // --- meshes ------------------------------------------------------------------------------
 const meshName = (n) => base(n).replace(/\.Shape$/, '');
@@ -212,8 +223,29 @@ for (const [i, j] of pairs) {
   if (lostMats.length) r.materials_missing = lostMats;
 }
 
+// --- materials (pbr) ----------------------------------------------------------------------------
+const pbrB = new Map(B.doc.materials.filter((m) => m.pbr).map((m) => [exact ? m.name : base(m.name), m.pbr]));
+let pbrChecked = 0;
+const pbrOff = [];
+for (const m of A.doc.materials) {
+  if (!m.pbr) continue;
+  const pb = pbrB.get(exact ? m.name : base(m.name));
+  if (!pb) { if (pbrB.size) pbrOff.push(`${m.name}: missing`); continue; }
+  pbrChecked++;
+  for (const [k, va] of Object.entries(m.pbr)) {
+    const vb = pb[k];
+    const same = Array.isArray(va) ? va.every((x, q) => Math.abs(x - vb?.[q]) < 1e-5)
+      : typeof va === 'number' ? Math.abs(va - vb) < 1e-5 : va === vb;
+    if (!same) pbrOff.push(`${m.name}.${k}: ${JSON.stringify(va)} vs ${JSON.stringify(vb)}`);
+  }
+}
+if (pbrB.size) {
+  report.materials = { checked: pbrChecked, differ: pbrOff.length, examples: pbrOff.slice(0, 12) };
+  if (pbrOff.length) fail(`materials: ${pbrOff.length} pbr fields differ, e.g. ${pbrOff.slice(0, 3).join('; ')}`);
+}
+
 // --- images ----------------------------------------------------------------------------------
-const fa = new Set(A.doc.images.map((i) => i.fnv).filter((h) => h && h !== '0000000000000000'));
+const fa = new Set(A.doc.images.filter((i) => !i.generated).map((i) => i.fnv).filter((h) => h && h !== '0000000000000000'));
 const fb = new Set(B.doc.images.map((i) => i.fnv));
 report.images = { reference: fa.size, candidate: fb.size, same: [...fa].filter((h) => fb.has(h)).length };
 if (B.doc.images.length && report.images.same < fa.size) fail(`images: ${fa.size - report.images.same} reference images not found byte-identical`);
@@ -229,6 +261,6 @@ for (const m of report.meshes) {
     ` morphs ok ${m.morph_result.ok} off ${m.morph_result.off} missing ${m.morph_result.missing}` +
     (m.morph_result.off ? ` worst ${m.morph_result.worst.key} ${m.morph_result.worst.mm}/${m.morph_result.worst.largest_delta_mm} mm` : ''));
 }
-console.log(`  images same ${report.images.same}/${report.images.reference}`);
+console.log(`  images same ${report.images.same}/${report.images.reference}` + (report.materials ? `; materials pbr ${report.materials.checked} checked, ${report.materials.differ} fields differ` : ''));
 for (const f of report.failures.slice(0, 12)) console.log(`  x ${f}`);
 process.exit(report.pass ? 0 : 1);

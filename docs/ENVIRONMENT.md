@@ -718,3 +718,50 @@ Measured constraints for the port:
   `waitForFunction` timeout both stayed silent and the run hung for hours, twice. Every
   harness run sits under a hard `timeout` (`tools/fbx-spike/run_all.sh`).
 - `size_t` is 32-bit in wasm32: shifting it by 32 is undefined (it broke the image hash).
+
+## 31. Browser port, Phase 1: the import cleanup in TypeScript equals Blender's [V] — 2026-10-22
+
+`app/src/convert/cleanup.ts` rebuilds what Blender's FBX importer + `common.import_fbx_clean`
+hand the adapters, from ufbx's raw import. Judged against `dump_contract.py --clean` with exact
+bone names (`tools/port/run_clean.sh`, `contract.mjs --exact`): **all six test exports pass** —
+bone names and parents, every vertex, skin weights by full bone name, rigid binds, 217
+materials' Principled values (base colour + map, alpha + map + which channel, roughness,
+metallic, normal map, strength, made-from-height), every embedded image.
+
+| Export | Armature (bones) | Twins re-parented | Groups folded | Rigid props | Bump → normal | Cleanup |
+|---|---|---|---|---|---|---|
+| Ira, CC | Armature (101) | 0 | 0 | 0 | 0 | 1.7 s |
+| Alice G8.1 | Genesis8_1Female (365) | 18 | 83 | 0 | 2 | 2.8 s |
+| Alice_gen8_02, G8 | Genesis8Female (511) | 0 | 192 | Chain1/2 → chestUpper | 16 | 8.0 s |
+| Genesis 3 | Genesis3Female (172) | 0 | 0 | 0 | 8 | 3.9 s |
+| ALICE-00001a, CC | Armature (101) | 0 | 0 | 0 | 0 | 1.5 s |
+| male2, G2 | Genesis (72) | 0 | 0 | 0 | 8 | 1.5 s |
+
+(Node, pure-JS image decoders; most of the time is decoding bump maps for the greyscale test.)
+
+What had to be learned from Blender rather than assumed:
+- **Which nodes are bones.** Blender's importer (`find_armatures` / `find_fake_bones`): only
+  FBX LimbNodes are bones; their nearest Null/Root parent becomes the armature object (else a
+  new `Armature` is inserted — every CC export); inside an armature any other node with bones
+  below becomes a bone too. Daz writes the figure and each item root as FBX `Root` nodes, so
+  `Genesis8_1Female` is the armature and `Genesis8_1FemaleEyelashes`, the hair root, etc. are
+  parentless bones in it. ufbx's "bone" (LimbNode, Root, or any skin-cluster target) is not
+  Blender's: the shim now lists every node with its FBX type and the cleanup applies the rule.
+- **Copy names.** Blender's `hip.001`, `hip.002`... number a bone's copies in file order within
+  the armature (checked on every mesh of both Daz G8/8.1 exports); the figure's own skeleton is
+  always the first copy and the body skins only to it. Repeated material names (CC's two
+  `Hair_Transparency`) are numbered the same way, so meshes reference materials by index.
+- **Images Blender reports.** `channels` is 4 for every image it loads (so `_is_greyscale`'s
+  `channels < 3` guard never fires); `depth` is 32 only for 8-bit RGBA PNG and palette PNG with
+  tRNS (grey+alpha PNG 16, RGB 24, grey 8, JPEG 8/24). `depth == 32` is when the importer drives
+  Alpha from the diffuse image, so the cleanup reads it from the PNG header, no decode.
+- **Height → normal** is ported (`images.ts`); a Blender-written fixture pins it to 8-bit
+  rounding (vitest). The cleanup marks which bump maps convert; the pixels are produced when
+  textures are written (a later phase).
+- **Harness**: image bytes made the Alice dump a 400 MB POST, which broke Playwright's
+  connection; saves now go in 32 MB pieces. Blender's generated `_normal` images are marked in
+  the reference dump and not compared as bytes.
+
+Not covered by any test export: a second armature (an item with its own rig, s24's
+`daz_alice_c`). `cleanup.test.ts` builds one by hand and pins the rule, but a real export with
+one should be run through `run_clean.sh` when there is one.

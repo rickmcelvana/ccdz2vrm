@@ -131,7 +131,9 @@ ENVIRONMENT.md section for anything measured.
    test file and compare to Blender's raw import (Level 1, before any adapter logic). Measure parse
    time and peak memory on the largest file. Same for `FBXLoader`. **Decide the parser**, and
    record how bone frames differ from Blender's (that sets how the face-pose tables are ported).
-1. **Import cleanup.** Port `import_fbx_clean`'s traps that still apply, the material rules
+1. ✅ **Import cleanup** (2026-10-22, ENVIRONMENT §31): `app/src/convert/cleanup.ts` equals
+   Blender's cleaned import on all six exports, exact names. Original plan:
+   **Import cleanup.** Port `import_fbx_clean`'s traps that still apply, the material rules
    (metallic, roughness floor, height → normal, opacity wiring). Level 1 on raw contracts.
 2. **CC adapter** (smallest): renames, Traditional mix, visemes, T-pose, jaw bake. Level 1 on Ira
    + the Traditional export.
