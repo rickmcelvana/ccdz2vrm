@@ -3,7 +3,7 @@
 Turn a **Daz 3D (Genesis 3 / 8 / 8.1)** or **Character Creator 3+** character into a **VRM 1.0
 avatar**: rigged, with a face that blinks, talks (visemes) and makes ARKit-52 expressions, eyes
 that follow, and optionally swinging hair. Built for
-[latentPresence](https://latentpresence.com); useful anywhere VRM 1.0 loads (three-vrm, UniVRM).
+[latentPresence]([https://latentpresence.com](https://github.com/rickmcelvana/latentPresence)); useful anywhere VRM 1.0 loads (three-vrm, UniVRM).
 
 Everything runs on your machine, in the browser or the desktop app. Your Daz/CC content never
 leaves it, and no Daz/CC asset ships with this repo ([docs/LICENSING.md](docs/LICENSING.md)).
