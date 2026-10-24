@@ -18,6 +18,8 @@ character about ten seconds.
 It is a static site: `pnpm build` writes it to `dist/`, which any static host serves as it is
 (any folder; `.wasm` with or without the right MIME type).
 
+Deployed at [https://ccdz2vrm.latentpresence.com/](https://ccdz2vrm.latentpresence.com/)
+
 ## The app (Windows)
 
 The same page as a desktop app, which saves VRMs straight to a folder (`Documents\ccdz2vrm`
