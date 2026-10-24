@@ -1,0 +1,61 @@
+name: release
+
+# On a `v*` tag (or by hand): run the gate, build the Windows installer, and attach it to a
+# **draft** GitHub release. Nothing reaches anyone until the draft is published. Steps:
+# docs/release.md. The website (ccdz2vrm.latentpresence.com) deploys separately: docs/deploy.md.
+#
+# Unsigned for Windows, as latentPresence's: SmartScreen warns ("More info -> Run anyway") until
+# code signing lands. No updater either: a new version is a new download.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: release (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: pnpm install --frozen-lockfile
+
+      # The same gate as every commit, so a tag on a red commit releases nothing.
+      - run: pnpm gate
+
+      - uses: tauri-apps/tauri-action@action-v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tauriScript: pnpm tauri
+          tagName: v__VERSION__
+          releaseName: ccdz2vrm v__VERSION__
+          releaseBody: |
+            Turn a Daz 3D (Genesis 3, 8, 8.1) or Character Creator 3+ character into a VRM avatar.
+
+            **No install needed:** https://ccdz2vrm.latentpresence.com converts in your browser (Chrome or Edge); nothing is uploaded.
+
+            **Windows app:** download the `_x64-setup.exe` below. It is unsigned, so Windows SmartScreen asks first: **More info → Run anyway**. The app saves VRMs to `Documents\ccdz2vrm` and can also run the original Blender pipeline (Options → Converter).
+
+            How to export from Daz or CC: https://github.com/rickmcelvana/ccdz2vrm#readme
+          releaseDraft: true
+          prerelease: false

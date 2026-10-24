@@ -28,6 +28,8 @@ type Job =
     };
 
 const LOG_KEEP = 400;
+/** The newest published release: the website offers the desktop app from here. */
+const RELEASES = 'https://github.com/rickmcelvana/ccdz2vrm/releases/latest';
 const ENGINE_KEY = 'ccdz2vrm.engine';
 
 /** The converter last chosen here, if this backend offers it (a per-viewer convenience). */
@@ -190,6 +192,11 @@ export function App() {
           <h1 className="topbar-title">Daz &amp; Character Creator → VRM</h1>
           <span className="muted small">Turn your character into an avatar for latentPresence and other VRM apps</span>
         </div>
+        {backend.kind === 'browser' && (
+          <a className="btn btn-ghost btn-small topbar-link" href={RELEASES} target="_blank" rel="noopener noreferrer">
+            Windows app
+          </a>
+        )}
       </header>
 
       <main className="layout">

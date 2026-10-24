@@ -8,6 +8,10 @@ that follow, and optionally swinging hair. Built for
 Everything runs on your machine, in the browser or the desktop app. Your Daz/CC content never
 leaves it, and no Daz/CC asset ships with this repo ([docs/LICENSING.md](docs/LICENSING.md)).
 
+**Use it:** in your browser at **[ccdz2vrm.latentpresence.com](https://ccdz2vrm.latentpresence.com)**,
+or the Windows app from the **[latest release](https://github.com/rickmcelvana/ccdz2vrm/releases/latest)**
+(unsigned: SmartScreen asks "More info → Run anyway").
+
 ## In your browser
 
 The converter runs in the page: drop the `.fbx`, pick a quality, press **Convert to VRM**, look
@@ -16,7 +20,8 @@ another Chromium browser is what it is tested in; a Daz character takes 15 s to 
 character about ten seconds.
 
 It is a static site: `pnpm build` writes it to `dist/`, which any static host serves as it is
-(any folder; `.wasm` with or without the right MIME type).
+(any folder; `.wasm` with or without the right MIME type). How ours is served, and how releases are
+made: [docs/deploy.md](docs/deploy.md), [docs/release.md](docs/release.md).
 
 Deployed at [https://ccdz2vrm.latentpresence.com/](https://ccdz2vrm.latentpresence.com/)
 

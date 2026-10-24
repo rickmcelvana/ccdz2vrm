@@ -413,6 +413,12 @@ code {
   font-size: 16px;
 }
 
+/* the website's link to the Windows app, at the bar's right end */
+.topbar-link {
+  margin-left: auto;
+  text-decoration: none;
+}
+
 .layout {
   display: grid;
   grid-template-columns: var(--steps-width) 1fr;
